@@ -11,8 +11,13 @@ import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import android.net.Uri
 import java.io.File
+import java.io.FileDescriptor
+import java.text.SimpleDateFormat
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -41,6 +46,10 @@ data class SourceInfo(
     val dvProfile: Int?,
     val dvCompatId: Int?,
     val audioMime: String?,
+    /** Recording location (latitude, longitude) from the container, if any. */
+    val location: Pair<Float, Float>?,
+    /** Recording time from the container, Unix epoch milliseconds. */
+    val createdMs: Long?,
 ) {
     val isHdr get() = transfer == Transfer.HLG || transfer == Transfer.PQ
 
@@ -55,6 +64,8 @@ data class SourceInfo(
         if (standard == MediaFormat.COLOR_STANDARD_BT2020) append(" BT.2020")
         if (bitrate > 0) append(" · ${bitrate / 1000} kbps")
         append("\naudio: ").append(audioMime?.removePrefix("audio/") ?: "none")
+        append("\nrecorded: ").append(createdMs?.let { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(it)) } ?: "unknown")
+        append(" · location: ").append(if (location != null) "yes" else "none")
     }
 }
 
@@ -65,18 +76,35 @@ class Optimizer(private val context: Context, private val source: Uri) {
 
     @Volatile var cancelled = false
 
+    /**
+     * Open the source in this process and hand its descriptor to [use] (extractors and retrievers dup it).
+     * Passing a path or URI lets the media server open it instead, which fails for paths it may not read,
+     * and then MediaMetadataRetriever silently returns no metadata.
+     */
+    private fun openSource(use: (FileDescriptor) -> Unit) {
+        context.contentResolver.openFileDescriptor(source, "r")!!.use { use(it.fileDescriptor) }
+    }
+
+    private fun openSource(extractor: MediaExtractor) = openSource { extractor.setDataSource(it) }
+
     fun probe(): SourceInfo {
         val extractor = MediaExtractor()
         try {
-            extractor.setDataSource(context, source, null)
+            openSource(extractor)
             val v = findTrack(extractor, "video/") ?: error("No video track")
             val a = findTrack(extractor, "audio/")
             val f = extractor.getTrackFormat(v)
             val retriever = MediaMetadataRetriever()
-            val (mmrRotation, mmrBitrate) = try {
-                retriever.setDataSource(context, source)
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() to
-                    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull()
+            val mmrRotation: Int?
+            val mmrBitrate: Int?
+            val location: Pair<Float, Float>?
+            val createdMs: Long?
+            try {
+                openSource { retriever.setDataSource(it) }
+                mmrRotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull()
+                mmrBitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull()
+                location = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_LOCATION)?.let(::parseIso6709)
+                createdMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)?.let(::parseMetadataDate)
             } finally {
                 retriever.release()
             }
@@ -99,6 +127,8 @@ class Optimizer(private val context: Context, private val source: Uri) {
                 dvProfile = dvProfile,
                 dvCompatId = dv?.second,
                 audioMime = a?.let { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME) },
+                location = location,
+                createdMs = createdMs,
             )
         } finally {
             extractor.release()
@@ -131,7 +161,9 @@ class Optimizer(private val context: Context, private val source: Uri) {
         var firstFailure: Throwable? = null
         while (true) {
             try {
-                return attempt(info, plan, output, onProgress, skip)
+                val report = attempt(info, plan, output, onProgress, skip)
+                info.createdMs?.let { Mp4Meta.setCreationTime(output, it) }
+                return report
             } catch (e: DecoderStartFailure) {
                 Log.w("Decoder ${e.decoder} failed before the first frame: ${e.cause}")
                 if (firstFailure == null) firstFailure = e.cause
@@ -154,8 +186,8 @@ class Optimizer(private val context: Context, private val source: Uri) {
 
     private fun attempt(info: SourceInfo, plan: Plan, output: File, onProgress: (Float) -> Unit, skip: Set<String>): String {
         val started = System.currentTimeMillis()
-        val extractor = MediaExtractor().apply { setDataSource(context, source, null) }
-        val audioExtractor = MediaExtractor().apply { setDataSource(context, source, null) }
+        val extractor = MediaExtractor().also(::openSource)
+        val audioExtractor = MediaExtractor().also(::openSource)
         var encoder: MediaCodec? = null
         var decoder: MediaCodec? = null
         var egl: EglCore? = null
@@ -188,6 +220,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
             dec.start()
 
             muxer = MediaMuxer(output.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            info.location?.let { (lat, lon) -> muxer.setLocation(lat, lon) }
             var muxVideo = -1
             var producedProfile = "?"
             var encodedFrames = 0
@@ -549,6 +582,21 @@ class Optimizer(private val context: Context, private val source: Uri) {
                 }
             }
             return "?"
+        }
+
+        /** Parse the leading latitude/longitude of an ISO 6709 string such as "+53.9045+027.5615+210.0/". */
+        fun parseIso6709(value: String): Pair<Float, Float>? {
+            val m = Regex("""^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)""").find(value) ?: return null
+            val lat = m.groupValues[1].toFloat()
+            val lon = m.groupValues[2].toFloat()
+            return if (lat in -90f..90f && lon in -180f..180f) lat to lon else null
+        }
+
+        /** Parse MediaMetadataRetriever's date ("20261031T153012.000Z"); null when missing or unset (1904/1970). */
+        fun parseMetadataDate(value: String): Long? {
+            val format = SimpleDateFormat("yyyyMMdd'T'HHmmss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+            val ms = runCatching { format.parse(value)?.time }.getOrNull() ?: return null
+            return ms.takeIf { it > 86_400_000L * 366 }
         }
 
         /** Parse a dvcC/dvvC box payload into (profile, base-layer compatibility id). */

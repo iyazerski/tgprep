@@ -50,16 +50,25 @@ def main() -> None:
     """Run one optimization and pull the result."""
     video, out_dir = Path(sys.argv[1]), Path(sys.argv[2])
     out_dir.mkdir(parents=True, exist_ok=True)
-    # /data/local/tmp is traversable by apps, so a world-readable file there opens via file:// without
-    # needing a URI grant (adb can't grant MediaStore URIs to the app).
-    remote = f"/data/local/tmp/{video.name}"
+    # Open the clip like the gallery does: a MediaStore content:// URI with a read grant. File paths behave
+    # differently (SELinux blocks the media server, and MediaProvider's location redaction is skipped).
+    remote = f"/sdcard/DCIM/TgPrepTest/{video.name}"
     adb("push", str(video), remote)
-    adb("shell", "chmod", "644", remote)
-    adb("shell", "rm", "-rf", "/sdcard/Movies/TgPrep")
+    adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", f"file://{remote}")
+    uri = None
+    for _ in range(20):
+        rows = adb("shell", "content", "query", "--uri", "content://media/external/video/media", "--projection",
+                   "_id", "--where", f"\"relative_path='DCIM/TgPrepTest/' AND _display_name='{video.name}'\"")
+        if m := re.search(r"_id=(\d+)", rows):
+            uri = f"content://media/external/video/media/{m.group(1)}"
+            break
+        time.sleep(0.5)
+    if uri is None:
+        raise SystemExit(f"MediaStore did not index {remote}")
     adb("shell", "am", "force-stop", "dev.tgprep")
     adb(
         "shell", "am", "start", "-a", "android.intent.action.VIEW", "-t", "video/mp4",
-        "-d", f"file://{remote}", "-n", "dev.tgprep/.MainActivity",
+        "-d", uri, "--grant-read-uri-permission", "-n", "dev.tgprep/.MainActivity",
     )
     tap(wait_for(r"^Optimize for Telegram$", 30))
     t0 = time.time()
@@ -71,9 +80,13 @@ def main() -> None:
         raise SystemExit(1)
     tap(wait_for(r"^Save copy to gallery$", 10))
     time.sleep(3)
-    for name in adb("shell", "ls", "/sdcard/Movies/TgPrep").split():
-        adb("pull", f"/sdcard/Movies/TgPrep/{name}", str(out_dir / name))
-        print(f"pulled {out_dir / name}")
+    # The gallery copy lands in the camera folder; take the newest one (never delete the user's files).
+    newest = adb("shell", "ls -t /sdcard/DCIM/Camera/*_TG*.mp4 | head -n 1").strip()
+    if not newest:
+        raise SystemExit("no *_TG*.mp4 in /sdcard/DCIM/Camera")
+    target = out_dir / Path(newest).name.replace(" ", "_")
+    adb("pull", newest, str(target))
+    print(f"pulled {target}")
 
 
 if __name__ == "__main__":

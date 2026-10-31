@@ -80,7 +80,18 @@ The comparison tool below confirms this by matching the bitstream hash.
 - **Mux:** MediaMuxer MP4 with the audio track copied as is. The result is shared through a
   read-only `content://dev.tgprep.out/…` provider. "Send to Telegram" targets Telegram directly
   (`org.telegram.messenger`, `…web`, `…beta`); long-press opens the system share sheet.
-  "Save copy to gallery" writes to `Movies/TgPrep`.
+  "Save copy to gallery" writes `<original name>_TG.mp4` to the camera folder `DCIM/Camera` with
+  the original's date taken, so it shows up in Photos next to the original.
+- **Metadata:** the recording date and the GPS location are copied from the original.
+  - MediaMuxer always stamps "now" as the creation time, so `Mp4Meta` rewrites the
+    `mvhd`/`tkhd`/`mdhd` times in place after muxing. MediaMuxer can set the location itself.
+  - Android removes the GPS from shared videos unless the app holds `ACCESS_MEDIA_LOCATION`. The
+    app asks for it once, on the first video. On Android 16 this shows the "photos and videos"
+    dialog: **Allow all** grants only media location (the app still can't browse your library).
+    If you deny it, everything works except the location.
+  - **Privacy:** Telegram uploads the file untouched, so a location inside it would reach every
+    chat member. The copy sent to Telegram has the location box renamed to `free`. That's
+    4 bytes, and the video stream stays identical. Only the gallery copy keeps the location.
 
 The detail panel shows what really happened: which decoder ran, the color signal it reported,
 the encoder, the encoded frame count, and the H.264 profile it actually produced (read from the SPS).
@@ -123,6 +134,7 @@ before switching between the two.
    Without adb: open the download link above in the phone's browser, open the downloaded file,
    and allow "Install unknown apps" for the browser. ColorOS may run an extra security scan, which you can let pass.
 3. In the camera, record with Dolby Vision on. In Photos, open the clip → Share → **TG Prep**.
+   On the first video, the app asks for media access: pick **Allow all** to keep the location.
 
 ## Tests
 
@@ -130,6 +142,12 @@ All tools run on the computer (`uv`, `ffmpeg`, `ffprobe`; plus `dovi_tool` and `
 test clips; an ffmpeg with `libplacebo` for HDR reference frames).
 
 ### 1. Synthetic, exact (emulator or phone)
+
+`adb_run.py` opens the clip the way the gallery does: it pushes the clip to `DCIM/TgPrepTest`,
+then sends a MediaStore `content://` URI with a read grant. File paths behave differently
+(SELinux blocks the media server, and the location removal doesn't apply), so they would hide
+metadata bugs. Run `adb shell pm grant dev.tgprep android.permission.ACCESS_MEDIA_LOCATION`
+once after installing.
 
 `make_hlg_test.py` makes a portrait HLG clip with known gray, color, and skin patches, a
 top-left orientation marker, rotation −90, and AAC audio. `tonemap_ref.py` computes the expected
@@ -139,7 +157,7 @@ and compares every patch, with a tolerance of 6 codes.
 ```sh
 uv run --with numpy tools/make_hlg_test.py /tmp/hlg.mp4 --size 2160x3840          # phone: HEVC 10-bit 4K
 uv run tools/adb_run.py /tmp/hlg.mp4 /tmp/out    # push, open in app, Optimize, save, pull
-cd tools && uv run --with numpy check_output.py /tmp/out/TgPrep_*.mp4
+cd tools && uv run --with numpy check_output.py /tmp/out/*_TG*.mp4
 ```
 
 DV 8.4 variant: inject an RPU with `dovi_tool inject-rpu`, mux with
@@ -171,7 +189,7 @@ needs to be checked with the default `bt2020` clips.
    Downloads / Save as).
 4. Copy all three files to the computer:
    `adb pull /sdcard/DCIM/Camera/<clip>.mp4 orig.mp4`,
-   `adb pull /sdcard/Movies/TgPrep/<out>.mp4 opt.mp4`, plus the received `recv.mp4`. Then run:
+   `adb pull "/sdcard/DCIM/Camera/<clip>_TG.mp4" opt.mp4`, plus the received `recv.mp4`. Then run:
    ```sh
    uv run tools/compare.py orig.mp4 opt.mp4 recv.mp4 --out cmp
    ```

@@ -1,5 +1,6 @@
 package dev.tgprep
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ContentValues
@@ -8,7 +9,9 @@ import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -61,6 +64,11 @@ class MainActivity : Activity() {
         if (requestCode == REQUEST_PICK && resultCode == RESULT_OK) data?.data?.let(::load)
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_LOCATION) pendingLoad?.also { pendingLoad = null }?.let(::load)
+    }
+
     private fun handleIntent(intent: Intent?) {
         val uri = when (intent?.action) {
             Intent.ACTION_SEND -> intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
@@ -70,7 +78,19 @@ class MainActivity : Activity() {
         if (uri != null) load(uri) else showIdle()
     }
 
+    private var pendingLoad: Uri? = null
+
     private fun load(uri: Uri) {
+        // Without ACCESS_MEDIA_LOCATION, MediaProvider strips the GPS from the shared file. Ask once;
+        // continue either way.
+        if (checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            !getPreferences(MODE_PRIVATE).getBoolean(PREF_ASKED_LOCATION, false)
+        ) {
+            getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_ASKED_LOCATION, true).apply()
+            pendingLoad = uri
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), REQUEST_LOCATION)
+            return
+        }
         source = uri
         output = null
         status.text = "Reading video…"
@@ -101,8 +121,11 @@ class MainActivity : Activity() {
         val uri = source ?: return
         val info = sourceInfo ?: return
         OutputProvider.clear(this)
-        val name = "TgPrep_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.mp4"
-        val out = File(OutputProvider.outputDir(this), name)
+        val base = sourceBaseName(uri) ?: "TgPrep_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}"
+        // The full file keeps the location for the gallery copy. Telegram uploads files untouched, so the
+        // copy that gets sent has the location removed to avoid sharing GPS with the chat.
+        val out = File(OutputProvider.outputDir(this), "${base}_TG.full.mp4")
+        val shareFile = File(OutputProvider.outputDir(this), "${base}_TG.mp4")
         val optimizer = Optimizer(this, uri)
         job = optimizer
         primary.isEnabled = false
@@ -114,7 +137,9 @@ class MainActivity : Activity() {
         val plan = optimizer.plan(info)
         Thread {
             val result = runCatching {
-                optimizer.run(info, plan, out) { p -> runOnUiThread { progress.progress = (p * 1000).toInt() } }
+                val report = optimizer.run(info, plan, out) { p -> runOnUiThread { progress.progress = (p * 1000).toInt() } }
+                Mp4Meta.copyWithoutLocation(out, shareFile)
+                report
             }
             runOnUiThread {
                 job = null
@@ -129,8 +154,8 @@ class MainActivity : Activity() {
                     details.text = "Source: ${info.describe()}\n\n$report"
                     primary.text = "Send to Telegram"
                     primary.isEnabled = true
-                    primary.setOnClickListener { share(out, direct = true) }
-                    primary.setOnLongClickListener { share(out, direct = false); true }
+                    primary.setOnClickListener { share(shareFile, direct = true) }
+                    primary.setOnLongClickListener { share(shareFile, direct = false); true }
                     save.visibility = View.VISIBLE
                 }.onFailure {
                     Log.w("optimize failed: ${it.stackTraceToString()}")
@@ -162,12 +187,15 @@ class MainActivity : Activity() {
     }
 
     private fun saveToGallery(file: File) {
+        val createdMs = sourceInfo?.createdMs
         Thread {
             val result = runCatching {
                 val values = ContentValues().apply {
-                    put(MediaStore.Video.Media.DISPLAY_NAME, file.name)
+                    put(MediaStore.Video.Media.DISPLAY_NAME, file.name.removeSuffix(".full.mp4") + ".mp4")
                     put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                    put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/TgPrep")
+                    // The camera folder, so the copy shows up in Photos next to the original.
+                    put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/Camera")
+                    createdMs?.let { put(MediaStore.Video.Media.DATE_TAKEN, it) }
                     put(MediaStore.Video.Media.IS_PENDING, 1)
                 }
                 val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)!!
@@ -175,9 +203,19 @@ class MainActivity : Activity() {
                 contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
             }
             runOnUiThread {
-                Toast.makeText(this, if (result.isSuccess) "Saved to Movies/TgPrep" else "Save failed", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, if (result.isSuccess) "Saved to DCIM/Camera" else "Save failed", Toast.LENGTH_SHORT).show()
             }
         }.start()
+    }
+
+    /** Return the source's file name without extension, reduced to file-safe characters, or null if unknown. */
+    private fun sourceBaseName(uri: Uri): String? {
+        val name = runCatching {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull() ?: uri.lastPathSegment
+        return name?.substringAfterLast('/')?.substringBeforeLast('.')?.replace(Regex("[^A-Za-z0-9._-]"), "_")?.takeIf { it.isNotBlank() }
     }
 
     private fun isInstalled(pkg: String) = try {
@@ -253,6 +291,8 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_PICK = 1
+        const val REQUEST_LOCATION = 2
+        const val PREF_ASKED_LOCATION = "asked_media_location"
         val TELEGRAM_PACKAGES = listOf("org.telegram.messenger", "org.telegram.messenger.web", "org.telegram.messenger.beta")
     }
 }
