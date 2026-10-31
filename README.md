@@ -61,10 +61,12 @@ The comparison tool below confirms this by matching the bitstream hash.
   If that fails, it falls back to the DV decoder with `KEY_COLOR_TRANSFER_REQUEST = HLG`.
   Decoders are ranked 10-bit-capable → hardware → platform order. If a decoder fails before
   the first frame, the app tries the next one.
-- **Render** (`Gl.kt`, GLES3 or GLES2, OES texture):
+- **Render** (`Gl.kt`, GLES2, OES texture):
   - Applies the rotation and downscales (with 4 taps when shrinking a lot).
-  - Where `GL_EXT_YUV_target` exists, it samples raw 10-bit YUV and applies its own BT.2020
-    matrix. Otherwise it uses the driver's RGB conversion.
+  - The GPU driver converts YUV→RGB when sampling the decoder's frame. It knows the vendor's
+    buffer layout and the color metadata. An earlier version sampled raw YUV itself with
+    `GL_EXT_YUV_target`. On the Find X9 Pro (MediaTek) that returned no chroma for 10-bit
+    buffers and turned the whole video green, so it was removed.
   - HLG: inverse OETF, then the BT.2100 OOTF for a 1000-nit display (system gamma 1.2).
     PQ: the EOTF, using the mastering peak.
   - BT.2390 EETF highlight roll-off down to 203-nit SDR reference white, then a BT.2020→BT.709
@@ -81,7 +83,7 @@ The comparison tool below confirms this by matching the bitstream hash.
   "Save copy to gallery" writes to `Movies/TgPrep`.
 
 The detail panel shows what really happened: which decoder ran, the color signal it reported,
-the sampling path, the encoder, and the H.264 profile it actually produced (read from the SPS).
+the encoder, the encoded frame count, and the H.264 profile it actually produced (read from the SPS).
 
 ## Build
 
@@ -192,11 +194,15 @@ Pass criteria:
 
 ## Known limits
 
-- The phone path has not been run on a real Find X9 Pro yet. The emulator can't decode
-  10-bit HEVC or sample 10-bit YUV. Things to check on the phone:
-  - The "Decoder" line in the details panel should show the base-layer HEVC decoder.
-  - "Sampling" should say 10-bit YUV.
+- The emulator can't decode 10-bit HEVC, so the phone's real decode path is only tested on the
+  phone. Things to check in the details panel:
+  - The "Decoder" line should show the base-layer HEVC decoder.
   - The encoder should report High.
+  - The frame count should be about duration × fps.
+- Telegram shows the frame rate as `(int) avg_frame_rate` (`gifvideo.cpp`), which truncates.
+  Camera clips use real capture timestamps, so a "60 fps" clip can average slightly under 60
+  (e.g. 59.95) and then shows as 59. The app keeps the
+  source timestamps on purpose: retiming them to exactly 60 would make audio drift.
 - The Dolby Vision RPU (per-scene dynamic metadata) is ignored. The app tone-maps the HLG base
   layer, which is what the profile 8.4 compatibility guarantees. Profile 5 (no compatible base
   layer) isn't produced by phone cameras, and it would only be decoded via the vendor DV decoder.

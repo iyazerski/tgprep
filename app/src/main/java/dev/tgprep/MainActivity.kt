@@ -126,6 +126,7 @@ class MainActivity : Activity() {
                     // Telegram's editor preselects at most its 3rd quality step (720p for videos above 1280 px),
                     // and only its top step sends the file untouched.
                     status.text = "Done. In Telegram, tap the quality button\nand pick ${min(plan.width, plan.height)}p (top) so it's sent as is."
+                    details.text = "Source: ${info.describe()}\n\n$report"
                     primary.text = "Send to Telegram"
                     primary.isEnabled = true
                     primary.setOnClickListener { share(out, direct = true) }

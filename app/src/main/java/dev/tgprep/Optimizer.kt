@@ -190,6 +190,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
             muxer = MediaMuxer(output.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             var muxVideo = -1
             var producedProfile = "?"
+            var encodedFrames = 0
             var muxAudio = -1
             val audioBuffer = ByteBuffer.allocateDirect(audioFormat?.intOrNull(MediaFormat.KEY_MAX_INPUT_SIZE)?.coerceAtLeast(64 * 1024) ?: (1 shl 20))
             val audioInfo = MediaCodec.BufferInfo()
@@ -267,6 +268,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
                         check(muxerStarted) { "Encoder produced data before its format" }
                         buf.position(encInfo.offset).limit(encInfo.offset + encInfo.size)
                         muxer.writeSampleData(muxVideo, buf, encInfo)
+                        encodedFrames++
                         copyAudioUpTo(encInfo.presentationTimeUs + 500_000)
                     }
                     enc.releaseOutputBuffer(idx, false)
@@ -289,7 +291,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
                         if (keep) {
                             if (renderer == null) {
                                 colorSetup = resolveColor(info, decoderOutFormat ?: dec.outputFormat)
-                                renderer = Renderer(egl.glesVersion, colorSetup, info.rotation, info.width, info.height, plan.width, plan.height)
+                                renderer = Renderer(colorSetup, info.rotation, info.width, info.height, plan.width, plan.height)
                             }
                             input.awaitFrame()
                             renderer.draw(input)
@@ -319,12 +321,14 @@ class Optimizer(private val context: Context, private val source: Uri) {
             val c = colorSetup!!
             return buildString {
                 append("Output: ${plan.width}x${plan.height} H.264 SDR BT.709 · ${plan.fps} fps · target ${plan.bitrate / 1000} kbps\n")
-                append("Size: ${"%.1f".format(output.length() / 1e6)} MB · $frames frames in ${"%.1f".format(seconds)} s\n")
+                append("Size: ${"%.1f".format(output.length() / 1e6)} MB · $encodedFrames frames in ${"%.1f".format(seconds)} s")
+                // The encoder surface can drop frames under load; make that visible.
+                if (encodedFrames != frames) append(" (rendered $frames)")
+                append("\n")
                 append("Decoder: $decoderNote\n")
                 append("Encoder: $encoderName → $producedProfile\n")
                 append("Decoded as: ${c.transfer} · ${standardName(c.standard)} · ${if (c.fullRange) "full" else "limited"}")
                 if (c.transfer == Transfer.PQ) append(" · peak ${c.peakNits.toInt()} nits")
-                append("\nSampling: ${if (renderer!!.usesYuvSampling) "10-bit YUV (GLES3)" else "driver RGB (8-bit)"}")
             }
         } catch (e: Exception) {
             val name = decoder?.name
@@ -368,7 +372,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
         val fullRange = if (range != null && range != 0) range == MediaFormat.COLOR_RANGE_FULL else info.fullRange
         // Ignore implausible peak values; 1000 nits is the common mastering level for phone HDR.
         val peak = info.peakNits.takeIf { it in 400f..10000f } ?: 1000f
-        return ColorSetup(transfer, standard, fullRange, if (hdr) 10 else 8, peak)
+        return ColorSetup(transfer, standard, fullRange, peak)
     }
 
     private fun createDecoder(format: MediaFormat, info: SourceInfo, surface: android.view.Surface, skip: Set<String>): Pair<MediaCodec, String> {
