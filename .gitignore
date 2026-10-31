@@ -1,0 +1,9 @@
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties
+*.apk
+*.jks
+__pycache__/
+.DS_Store
