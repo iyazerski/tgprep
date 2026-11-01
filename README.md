@@ -77,10 +77,12 @@ app makes 1080p and you pick 1080p by hand.
     gave a green image with `GL_EXT_YUV_target` and a pink tint on whites with the driver's
     own conversion.
   - Applies the rotation and downscales (with 4 taps when shrinking a lot).
-  - HLG: inverse OETF, then the BT.2100 OOTF for a 1000-nit display (system gamma 1.2).
-    PQ: the EOTF, using the mastering peak.
-  - BT.2390 EETF highlight roll-off down to 203-nit SDR reference white, then a BT.2020→BT.709
-    gamut map that preserves luminance and desaturates out-of-gamut colors.
+  - HLG (phone cameras): scene-light conversion. Inverse OETF to scene light, scaled so HLG
+    reference white (75% signal) lands at 62% linear, then a smooth exponential shoulder above
+    55% for highlights. An earlier display-light mapping (BT.2100 OOTF for 1000 nits, BT.2390 EETF
+    to 203 nits) turned overcast skies flat white and made shadows too dark.
+  - PQ: the EOTF with the mastering peak, then the BT.2390 EETF to 203-nit SDR white.
+  - Then a BT.2020→BT.709 gamut map that preserves luminance and desaturates out-of-gamut colors.
   - Then the BT.709 OETF and dithering before 8-bit. Android's compositor and Apple's players
     decode BT.709 video with the inverse of this curve, not gamma 2.4. Encoding with gamma 2.4
     made mid-tones look about 35% too bright on phones (18% gray shown as 25%).

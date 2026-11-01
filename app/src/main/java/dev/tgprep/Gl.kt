@@ -373,13 +373,16 @@ vec3 signalAt(vec2 uv) {
 """
 
         /**
-         * HDR→SDR conversion, following the approach used by mpv/libplacebo:
-         * 1. Decode HLG/PQ to display light in nits (HLG rendered for a 1000-nit display, system gamma 1.2).
-         * 2. Compress luminance with the ITU-R BT.2390 EETF to a 203-nit target (BT.2408 HDR reference
-         *    white), so diffuse white lands near 90% SDR signal and highlights roll off instead of clipping.
-         * 3. Convert BT.2020 to BT.709 primaries and bring out-of-gamut colors back by desaturating
+         * HDR→SDR conversion:
+         * 1. HLG (what phone cameras record): scene-light conversion. Undo the HLG OETF to get scene
+         *    light, scale it so HLG reference white (75% signal) lands at [HLG_WHITE] linear, and
+         *    compress luminance above [SHOULDER] with a smooth exponential shoulder. This keeps sky and
+         *    cloud structure, which a display-light mapping to a 203-nit target flattened to white, and
+         *    skips the HLG system gamma (1.2), which made shadows too dark on SDR screens.
+         *    PQ: decode to nits and compress with the ITU-R BT.2390 EETF to a 203-nit target.
+         * 2. Convert BT.2020 to BT.709 primaries and bring out-of-gamut colors back by desaturating
          *    toward the pixel's luminance (keeps hue and brightness).
-         * 4. Encode with the BT.709 OETF and add 0.5 LSB of static dither to hide banding in the 8-bit
+         * 3. Encode with the BT.709 OETF and add 0.5 LSB of static dither to hide banding in the 8-bit
          *    output. Android's compositor (SkNamedTransferFn::kRec2020 for TRANSFER_SMPTE_170M) and Apple's
          *    players decode BT.709 video with its inverse, not with gamma 2.4, so this curve shows the
          *    intended brightness. Gamma 2.4 made mid-tones look lifted on phones.
@@ -390,6 +393,9 @@ uniform float uSrcPeak;  // PQ content peak, nits
 uniform vec2 uTap;       // 2x2 tap offset in texture units, 0 = single tap
 
 const float SDR_WHITE = 203.0;
+const float HLG_WHITE = 0.62;           // linear SDR level for HLG reference white (75% signal)
+const float HLG_75_SCENE = 0.26496256;  // HLG inverse OETF of 0.75
+const float SHOULDER = 0.55;            // linear luminance where highlight compression starts
 const vec3 K2020 = vec3(0.2627, 0.6780, 0.0593);
 const vec3 K709 = vec3(0.2126, 0.7152, 0.0722);
 const mat3 BT2020_TO_BT709 = mat3(
@@ -427,21 +433,26 @@ float eetf(float nits, float srcPeak) {
     return pqToNits(e * srcPq);
 }
 
+// Smooth highlight shoulder: identity below SHOULDER, then approaches 1 with matching slope.
+float shoulder(float y) {
+    return y <= SHOULDER ? y : SHOULDER + (1.0 - SHOULDER) * (1.0 - exp(-(y - SHOULDER) / (1.0 - SHOULDER)));
+}
+
 // HDR signal (BT.2020 R'G'B') -> linear BT.709 relative to SDR white, in [0, 1].
 vec3 hdrToSdrLinear(vec3 sig) {
-    vec3 nits;
-    float peak;
+    vec3 rel;  // linear BT.2020, relative to SDR white
     if (uTransfer == 1) {
         vec3 scene = vec3(hlgInverseOetf(sig.r), hlgInverseOetf(sig.g), hlgInverseOetf(sig.b));
-        nits = 1000.0 * pow(max(dot(K2020, scene), 1e-6), 0.2) * scene;
-        peak = 1000.0;
+        rel = scene * (HLG_WHITE / HLG_75_SCENE);
+        float y = dot(K2020, rel);
+        if (y > 0.0) rel *= shoulder(y) / y;
     } else {
-        nits = vec3(pqToNits(sig.r), pqToNits(sig.g), pqToNits(sig.b));
-        peak = uSrcPeak;
+        vec3 nits = vec3(pqToNits(sig.r), pqToNits(sig.g), pqToNits(sig.b));
+        float y = dot(K2020, nits);
+        if (y > 0.0) nits *= eetf(y, uSrcPeak) / y;
+        rel = nits / SDR_WHITE;
     }
-    float y = dot(K2020, nits);
-    if (y > 0.0) nits *= eetf(y, peak) / y;
-    vec3 c = BT2020_TO_BT709 * (nits / SDR_WHITE);
+    vec3 c = BT2020_TO_BT709 * rel;
     float l = clamp(dot(K709, c), 0.0, 1.0);
     float mn = min(c.r, min(c.g, c.b));
     if (mn < 0.0) c = l + (c - l) * (l / (l - mn));
