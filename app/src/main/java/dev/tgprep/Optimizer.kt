@@ -135,15 +135,10 @@ class Optimizer(private val context: Context, private val source: Uri) {
         }
     }
 
-    /**
-     * Decide the output. [compact] limits it to 1280x720: Telegram's default quality sends such files
-     * untouched, while bigger files are re-encoded at 720p / 2.6 Mbps unless 1080p is picked by hand.
-     */
-    fun plan(info: SourceInfo, compact: Boolean): Plan {
+    fun plan(info: SourceInfo): Plan {
         val (dispW, dispH) = if (info.rotation % 180 != 0) info.height to info.width else info.width to info.height
         // Telegram sends the file untouched only if its long side is <= 1920 (top quality preset).
-        val (maxLong, maxShort) = if (compact) 1280 to 720 else 1920 to 1080
-        val scale = min(1f, min(maxLong / max(dispW, dispH).toFloat(), maxShort / min(dispW, dispH).toFloat()))
+        val scale = min(1f, min(MAX_LONG / max(dispW, dispH).toFloat(), MAX_SHORT / min(dispW, dispH).toFloat()))
         val w = even(dispW * scale)
         val h = even(dispH * scale)
         // Cap frame rate at 60: 120 fps footage would double the size for little visible benefit.
@@ -546,6 +541,8 @@ class Optimizer(private val context: Context, private val source: Uri) {
 
     private companion object {
         const val TIMEOUT_US = 10_000L
+        const val MAX_LONG = 1920
+        const val MAX_SHORT = 1080
         const val BITS_PER_PIXEL = 0.18f
 
         val TEN_BIT_PROFILES = setOf(

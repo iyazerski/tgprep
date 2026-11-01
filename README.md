@@ -42,11 +42,10 @@ every passthrough check: H.264 8-bit SDR BT.709, rotation applied to the pixels,
 AAC audio copied as is. When you pick the top quality, Telegram uploads these bytes unchanged.
 The comparison tool below confirms this by matching the bitstream hash.
 
-**720p switch:** for videos up to 1280 px on the long side, Telegram's *default* quality is
-already the top preset, so it sends them untouched with no extra tap. Bigger files sent at the
-default quality are re-encoded to 720p at 2.6 Mbps (too low for 60 fps), which looks bad. Turn
-the switch on to get a 720p file that is sent as is. Leave it off for 1080p, and pick 1080p in
-Telegram.
+**Why not a 720p file:** Telegram's quality picker never preselects the top option. It reuses
+the quality you last picked for that size class, or picks from your network settings. In a real
+test, a 720p file sent at the default quality was re-encoded to 360x640 at about 1 Mbps. So the
+app makes 1080p and you pick 1080p by hand.
 
 ## Options considered
 
@@ -82,7 +81,9 @@ Telegram.
     PQ: the EOTF, using the mastering peak.
   - BT.2390 EETF highlight roll-off down to 203-nit SDR reference white, then a BT.2020→BT.709
     gamut map that preserves luminance and desaturates out-of-gamut colors.
-  - Then BT.709 gamma (2.4) and dithering before 8-bit.
+  - Then the BT.709 OETF and dithering before 8-bit. Android's compositor and Apple's players
+    decode BT.709 video with the inverse of this curve, not gamma 2.4. Encoding with gamma 2.4
+    made mid-tones look about 35% too bright on phones (18% gray shown as 25%).
   - SDR sources pass through with only the matrix conversion.
 - **Encode:** hardware H.264 High, VBR, 2 s GOP, no B-frames, tagged BT.709 limited range. Bitrate is
   0.18 bits per pixel with a weighting for frame rate: about 11 Mbps at 1080p30 and about 16 Mbps
@@ -181,7 +182,7 @@ Results on the Android 16 arm64 emulator (verified):
 |---|---|---|
 | HLG BT.2020 HEVC 8-bit, 1080x1920, rot −90 | goldfish HEVC → shader YUV→RGB → c2.android.avc | all PASS, worst patch error 5.1 |
 | HLG BT.2020 AV1 10-bit, 1080x1920, rot −90 | dav1d (8-bit output) | all PASS, worst 4.3 |
-| HLG BT.2020 HEVC 60 fps, 3 s, 720p switch on | 1920x1080 → 720x1280 | all PASS, 180/180 frames, even 16.7 ms spacing |
+| HLG BT.2020 HEVC 60 fps, 3 s | all frames kept | all PASS, 180/180 frames, even 16.7 ms spacing |
 | **DV 8.4** (HEVC base + RPU, `dvh1`), rot −90 | DV base layer via plain HEVC decoder | decodes, 60/60 frames |
 | SDR BT.601 | no tone map, matrix only | within 5 codes of the source |
 | HEVC 10-bit HLG / DV 8.4 10-bit | — | emulator decoders can't decode Main10; the app reports "No decoder on this device could decode video/hevc HDR (tried …)". This is a limit of the emulator only. |
@@ -195,8 +196,7 @@ are wrong before the app ever sees them.
 1. Record a 10-20 s Dolby Vision clip with a sky, skin, a dark corner, and a bright light source.
    Hold the phone in portrait.
 2. Optimize it, then tap **Save copy to gallery** and **Send to Telegram**. In Telegram's quality
-   menu, pick the top option (1080p), then send it to *Saved Messages*. With the **720p** switch
-   on, keep Telegram's default quality instead.
+   menu, pick the top option (1080p), then send it to *Saved Messages*.
 3. On a second device, or in Telegram Desktop, download the received video (Save to
    Downloads / Save as).
 4. Copy all three files to the computer:

@@ -19,14 +19,12 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.max
 import kotlin.math.min
 
 /** Single screen: receive a video, optimize it with one tap, send the result to Telegram. */
@@ -38,7 +36,6 @@ class MainActivity : Activity() {
     private lateinit var primary: Button
     private lateinit var save: Button
     private lateinit var pick: Button
-    private lateinit var compact: Switch
 
     private var source: Uri? = null
     private var sourceInfo: SourceInfo? = null
@@ -107,7 +104,6 @@ class MainActivity : Activity() {
                     primary.text = "Optimize for Telegram"
                     primary.isEnabled = true
                     primary.setOnClickListener { optimize() }
-                    compact.visibility = View.VISIBLE
                     primary.setOnLongClickListener(null)
                     save.visibility = View.GONE
                     progress.visibility = View.GONE
@@ -138,8 +134,7 @@ class MainActivity : Activity() {
         progress.progress = 0
         status.text = "Optimizing…"
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val plan = optimizer.plan(info, compact.isChecked)
-        compact.visibility = View.GONE
+        val plan = optimizer.plan(info)
         Thread {
             val result = runCatching {
                 val report = optimizer.run(info, plan, out) { p -> runOnUiThread { progress.progress = (p * 1000).toInt() } }
@@ -155,11 +150,7 @@ class MainActivity : Activity() {
                     output = out
                     // Telegram's editor preselects at most its 3rd quality step (720p for videos above 1280 px),
                     // and only its top step sends the file untouched.
-                    status.text = if (max(plan.width, plan.height) <= 1280) {
-                        "Done. Telegram's default quality sends it as is."
-                    } else {
-                        "Done. In Telegram, tap the quality button\nand pick ${min(plan.width, plan.height)}p (top) so it's sent as is."
-                    }
+                    status.text = "Done. In Telegram, tap the quality button\nand pick ${min(plan.width, plan.height)}p (top) so it's sent as is."
                     details.text = "Source: ${info.describe()}\n\n$report"
                     primary.text = "Send to Telegram"
                     primary.isEnabled = true
@@ -246,7 +237,6 @@ class MainActivity : Activity() {
         save.visibility = View.GONE
         progress.visibility = View.GONE
         pick.visibility = View.GONE
-        compact.visibility = View.GONE
     }
 
     private fun pickVideo() {
@@ -286,19 +276,11 @@ class MainActivity : Activity() {
             text = "Pick another video"
             setOnClickListener { pickVideo() }
         }
-        compact = Switch(this).apply {
-            text = "720p: Telegram sends it as is with its default quality.\nOff: 1080p, pick 1080p in Telegram."
-            textSize = 14f
-            isChecked = getPreferences(MODE_PRIVATE).getBoolean(PREF_COMPACT, false)
-            setOnCheckedChangeListener { _, checked -> getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_COMPACT, checked).apply() }
-            setPadding(0, pad / 2, 0, pad / 2)
-            visibility = View.GONE
-        }
+
         val full = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         root.addView(status, full)
         root.addView(progress, full)
         root.addView(primary, full)
-        root.addView(compact, full)
         root.addView(save, full)
         root.addView(details, full)
         root.addView(pick, full)
@@ -312,7 +294,6 @@ class MainActivity : Activity() {
         const val REQUEST_PICK = 1
         const val REQUEST_LOCATION = 2
         const val PREF_ASKED_LOCATION = "asked_media_location"
-        const val PREF_COMPACT = "compact_720p"
         val TELEGRAM_PACKAGES = listOf("org.telegram.messenger", "org.telegram.messenger.web", "org.telegram.messenger.beta")
     }
 }

@@ -54,7 +54,7 @@ def eetf(nits: float, src_peak: float) -> float:
 
 
 def hlg_to_sdr_code(rgb_hlg: np.ndarray) -> np.ndarray:
-    """Return 8-bit-scale BT.709 R'G'B' (0..255, gamma 2.4) for one HLG BT.2020 R'G'B' pixel."""
+    """Return 8-bit-scale BT.709 R'G'B' (0..255, BT.709 OETF) for one HLG BT.2020 R'G'B' pixel."""
     scene = hlg_inverse_oetf(rgb_hlg)
     nits = 1000.0 * max(float(K2020 @ scene), 1e-6) ** 0.2 * scene
     y = float(K2020 @ nits)
@@ -68,4 +68,5 @@ def hlg_to_sdr_code(rgb_hlg: np.ndarray) -> np.ndarray:
     mx = c.max()
     if mx > 1:
         c = lum + (c - lum) * ((1 - lum) / (mx - lum))
-    return np.clip(c, 0, 1) ** (1 / 2.4) * 255.0
+    c = np.clip(c, 0, 1)
+    return np.where(c < 0.018, 4.5 * c, 1.099 * c**0.45 - 0.099) * 255.0

@@ -379,8 +379,10 @@ vec3 signalAt(vec2 uv) {
          *    white), so diffuse white lands near 90% SDR signal and highlights roll off instead of clipping.
          * 3. Convert BT.2020 to BT.709 primaries and bring out-of-gamut colors back by desaturating
          *    toward the pixel's luminance (keeps hue and brightness).
-         * 4. Encode with the BT.1886 inverse EOTF (gamma 2.4) and add 0.5 LSB of static dither to hide
-         *    banding in the 8-bit output.
+         * 4. Encode with the BT.709 OETF and add 0.5 LSB of static dither to hide banding in the 8-bit
+         *    output. Android's compositor (SkNamedTransferFn::kRec2020 for TRANSFER_SMPTE_170M) and Apple's
+         *    players decode BT.709 video with its inverse, not with gamma 2.4, so this curve shows the
+         *    intended brightness. Gamma 2.4 made mid-tones look lifted on phones.
          */
         private const val FRAGMENT_COMMON = """
 uniform int uTransfer;   // 0 = SDR, 1 = HLG, 2 = PQ
@@ -462,7 +464,7 @@ void main() {
         c = pixel(vTex);
     }
     if (uTransfer != 0) {
-        c = pow(c, vec3(1.0 / 2.4));
+        c = mix(4.5 * c, 1.099 * pow(c, vec3(0.45)) - 0.099, step(0.018, c));
         float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
         c = clamp(c + (n - 0.5) / 255.0, 0.0, 1.0);
     }
