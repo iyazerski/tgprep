@@ -42,6 +42,12 @@ every passthrough check: H.264 8-bit SDR BT.709, rotation applied to the pixels,
 AAC audio copied as is. When you pick the top quality, Telegram uploads these bytes unchanged.
 The comparison tool below confirms this by matching the bitstream hash.
 
+**720p switch:** for videos up to 1280 px on the long side, Telegram's *default* quality is
+already the top preset, so it sends them untouched with no extra tap. Bigger files sent at the
+default quality are re-encoded to 720p at 2.6 Mbps (too low for 60 fps), which looks bad. Turn
+the switch on to get a 720p file that is sent as is. Leave it off for 1080p, and pick 1080p in
+Telegram.
+
 ## Options considered
 
 | Option | Verdict |
@@ -61,19 +67,24 @@ The comparison tool below confirms this by matching the bitstream hash.
   If that fails, it falls back to the DV decoder with `KEY_COLOR_TRANSFER_REQUEST = HLG`.
   Decoders are ranked 10-bit-capable → hardware → platform order. If a decoder fails before
   the first frame, the app tries the next one.
-- **Render** (`Gl.kt`, GLES2, OES texture):
+- **Frames from the decoder** come as CPU-visible YUV images (P010 for 10-bit HDR when the
+  decoder offers it, else 8-bit YUV 4:2:0), not through a Surface. Every decoded frame is
+  processed, in order, so none can be dropped. The Surface/SurfaceTexture path used before
+  could drop frames, which made 60 fps output stutter.
+- **Render** (`Gl.kt`, GLES3):
+  - The Y, U, and V planes are uploaded as plain byte textures. The shader rebuilds the exact
+    8- or 10-bit code values and does YUV→RGB with the BT.2020/709/601 matrix and range from
+    the file. Earlier versions let the GPU driver do this. On the Find X9 Pro (MediaTek) that
+    gave a green image with `GL_EXT_YUV_target` and a pink tint on whites with the driver's
+    own conversion.
   - Applies the rotation and downscales (with 4 taps when shrinking a lot).
-  - The GPU driver converts YUV→RGB when sampling the decoder's frame. It knows the vendor's
-    buffer layout and the color metadata. An earlier version sampled raw YUV itself with
-    `GL_EXT_YUV_target`. On the Find X9 Pro (MediaTek) that returned no chroma for 10-bit
-    buffers and turned the whole video green, so it was removed.
   - HLG: inverse OETF, then the BT.2100 OOTF for a 1000-nit display (system gamma 1.2).
     PQ: the EOTF, using the mastering peak.
   - BT.2390 EETF highlight roll-off down to 203-nit SDR reference white, then a BT.2020→BT.709
     gamut map that preserves luminance and desaturates out-of-gamut colors.
   - Then BT.709 gamma (2.4) and dithering before 8-bit.
   - SDR sources pass through with only the matrix conversion.
-- **Encode:** hardware H.264 High, VBR, 2 s GOP, tagged BT.709 limited range. Bitrate is
+- **Encode:** hardware H.264 High, VBR, 2 s GOP, no B-frames, tagged BT.709 limited range. Bitrate is
   0.18 bits per pixel with a weighting for frame rate: about 11 Mbps at 1080p30 and about 16 Mbps
   at 1080p60. It is never higher than the bitrate of a source that is already H.264. The frame
   rate is capped at 60.
@@ -168,23 +179,24 @@ Results on the Android 16 arm64 emulator (verified):
 
 | Clip | Path | Result |
 |---|---|---|
-| HLG AV1 8-bit, 1080x1920, rot −90 | dav1d → driver RGB → c2.android.avc | all PASS, worst patch error 4.7 |
-| HLG AV1 8-bit, 2048x2048 → 1080x1080 | downscale | all PASS, worst 4.3 |
-| **DV 8.4** (HEVC base + RPU, `dvh1`), rot −90 | DV base layer via plain HEVC decoder | all PASS, worst 3.8 |
-| SDR BT.601 AV1 | no tone map, matrix only | within 5 codes of the source |
+| HLG BT.2020 HEVC 8-bit, 1080x1920, rot −90 | goldfish HEVC → shader YUV→RGB → c2.android.avc | all PASS, worst patch error 5.1 |
+| HLG BT.2020 AV1 10-bit, 1080x1920, rot −90 | dav1d (8-bit output) | all PASS, worst 4.3 |
+| HLG BT.2020 HEVC 60 fps, 3 s, 720p switch on | 1920x1080 → 720x1280 | all PASS, 180/180 frames, even 16.7 ms spacing |
+| **DV 8.4** (HEVC base + RPU, `dvh1`), rot −90 | DV base layer via plain HEVC decoder | decodes, 60/60 frames |
+| SDR BT.601 | no tone map, matrix only | within 5 codes of the source |
 | HEVC 10-bit HLG / DV 8.4 10-bit | — | emulator decoders can't decode Main10; the app reports "No decoder on this device could decode video/hevc HDR (tried …)". This is a limit of the emulator only. |
 
-Emulator caveat: the test clips use the BT.601 matrix (`--matrix bt601`). With BT.2020 clips, the
-emulator's GPU driver path got grays right but colors wrong (green came out almost white). This
-fits a driver that ignores the BT.2020 matrix, and BT.601 clips pass. The phone's hardware path
-needs to be checked with the default `bt2020` clips.
+Note on test clips: `make_hlg_test.py` tags the raw input with the output's color settings.
+Without that, ffmpeg 9 silently converts the samples to the output matrix, and the clip's colors
+are wrong before the app ever sees them.
 
 ### 2. Real camera clip: original vs optimized vs received through Telegram
 
 1. Record a 10-20 s Dolby Vision clip with a sky, skin, a dark corner, and a bright light source.
    Hold the phone in portrait.
 2. Optimize it, then tap **Save copy to gallery** and **Send to Telegram**. In Telegram's quality
-   menu, pick the top option (1080p), then send it to *Saved Messages*.
+   menu, pick the top option (1080p), then send it to *Saved Messages*. With the **720p** switch
+   on, keep Telegram's default quality instead.
 3. On a second device, or in Telegram Desktop, download the received video (Save to
    Downloads / Save as).
 4. Copy all three files to the computer:

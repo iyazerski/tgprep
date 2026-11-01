@@ -83,6 +83,8 @@ def main() -> None:
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-display_rotation", "-90", "-noautorotate",
+        # Tag the raw input like the output, or ffmpeg converts the samples to the output matrix.
+        "-color_primaries", prim, "-color_trc", trc, "-colorspace", space, "-color_range", "tv",
         "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s", f"{h}x{w}", "-r", str(args.fps), "-i", "-",
         "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={args.seconds}",
         *(

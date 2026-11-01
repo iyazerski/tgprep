@@ -135,10 +135,15 @@ class Optimizer(private val context: Context, private val source: Uri) {
         }
     }
 
-    fun plan(info: SourceInfo): Plan {
+    /**
+     * Decide the output. [compact] limits it to 1280x720: Telegram's default quality sends such files
+     * untouched, while bigger files are re-encoded at 720p / 2.6 Mbps unless 1080p is picked by hand.
+     */
+    fun plan(info: SourceInfo, compact: Boolean): Plan {
         val (dispW, dispH) = if (info.rotation % 180 != 0) info.height to info.width else info.width to info.height
         // Telegram sends the file untouched only if its long side is <= 1920 (top quality preset).
-        val scale = min(1f, min(MAX_LONG / max(dispW, dispH).toFloat(), MAX_SHORT / min(dispW, dispH).toFloat()))
+        val (maxLong, maxShort) = if (compact) 1280 to 720 else 1920 to 1080
+        val scale = min(1f, min(maxLong / max(dispW, dispH).toFloat(), maxShort / min(dispW, dispH).toFloat()))
         val w = even(dispW * scale)
         val h = even(dispH * scale)
         // Cap frame rate at 60: 120 fps footage would double the size for little visible benefit.
@@ -191,7 +196,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
         var encoder: MediaCodec? = null
         var decoder: MediaCodec? = null
         var egl: EglCore? = null
-        var input: FrameInput? = null
+        var yuv: YuvTextures? = null
         var renderer: Renderer? = null
         var muxer: MediaMuxer? = null
         var muxerStarted = false
@@ -208,14 +213,10 @@ class Optimizer(private val context: Context, private val source: Uri) {
             encoder = enc
             egl = EglCore(enc.createInputSurface())
             enc.start()
-            input = FrameInput()
+            yuv = YuvTextures()
 
-            val decoderFormat = extractor.getTrackFormat(videoTrack).apply {
-                // With a Surface output, MediaCodec applies this rotation to the buffer transform itself.
-                // The renderer rotates explicitly, so drop it to avoid rotating twice.
-                removeKey(MediaFormat.KEY_ROTATION)
-            }
-            val (dec, decoderNote) = createDecoder(decoderFormat, info, input.surface, skip)
+            val decoderFormat = extractor.getTrackFormat(videoTrack)
+            val (dec, decoderNote) = createDecoder(decoderFormat, info, skip)
             decoder = dec
             dec.start()
 
@@ -224,6 +225,12 @@ class Optimizer(private val context: Context, private val source: Uri) {
             var muxVideo = -1
             var producedProfile = "?"
             var encodedFrames = 0
+            // Frame accounting for the report: dropped or reordered frames show up as stutter.
+            var sourceSamples = 0
+            var decodedFrames = 0
+            var reorderedFrames = 0
+            var maxEncodedPts = Long.MIN_VALUE
+            var sampling = "?"
             var muxAudio = -1
             val audioBuffer = ByteBuffer.allocateDirect(audioFormat?.intOrNull(MediaFormat.KEY_MAX_INPUT_SIZE)?.coerceAtLeast(64 * 1024) ?: (1 shl 20))
             val audioInfo = MediaCodec.BufferInfo()
@@ -272,6 +279,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
                         } else {
                             dec.queueInputBuffer(idx, 0, size, extractor.sampleTime, 0)
                             extractor.advance()
+                            sourceSamples++
                         }
                     }
                 }
@@ -302,6 +310,8 @@ class Optimizer(private val context: Context, private val source: Uri) {
                         buf.position(encInfo.offset).limit(encInfo.offset + encInfo.size)
                         muxer.writeSampleData(muxVideo, buf, encInfo)
                         encodedFrames++
+                        if (encInfo.presentationTimeUs < maxEncodedPts) reorderedFrames++
+                        maxEncodedPts = max(maxEncodedPts, encInfo.presentationTimeUs)
                         copyAudioUpTo(encInfo.presentationTimeUs + 500_000)
                     }
                     enc.releaseOutputBuffer(idx, false)
@@ -318,16 +328,22 @@ class Optimizer(private val context: Context, private val source: Uri) {
                     } else if (idx >= 0) {
                         val eos = decInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                         val pts = decInfo.presentationTimeUs
+                        if (decInfo.size > 0) decodedFrames++
                         val keep = decInfo.size > 0 &&
                             (plan.frameIntervalUs == 0L || lastKeptUs == Long.MIN_VALUE || pts - lastKeptUs >= plan.frameIntervalUs - 2_000)
-                        dec.releaseOutputBuffer(idx, keep)
                         if (keep) {
                             if (renderer == null) {
                                 colorSetup = resolveColor(info, decoderOutFormat ?: dec.outputFormat)
                                 renderer = Renderer(colorSetup, info.rotation, info.width, info.height, plan.width, plan.height)
                             }
-                            input.awaitFrame()
-                            renderer.draw(input)
+                            val image = dec.getOutputImage(idx) ?: error("Decoder ${dec.name} returned no image")
+                            try {
+                                yuv.upload(image)
+                            } finally {
+                                image.close()
+                            }
+                            if (frames == 0) sampling = "${yuv.bitDepth}-bit ${if (yuv.bitDepth == 10) "P010" else "YUV 4:2:0"}, YUV→RGB in shader"
+                            renderer.draw(yuv)
                             egl.swap(pts)
                             lastKeptUs = pts
                             frames++
@@ -337,6 +353,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
                                 onProgress((pts.toFloat() / info.durationUs).coerceIn(0f, 1f))
                             }
                         }
+                        dec.releaseOutputBuffer(idx, false)
                         if (eos) {
                             enc.signalEndOfInputStream()
                             decoderDone = true
@@ -354,14 +371,15 @@ class Optimizer(private val context: Context, private val source: Uri) {
             val c = colorSetup!!
             return buildString {
                 append("Output: ${plan.width}x${plan.height} H.264 SDR BT.709 · ${plan.fps} fps · target ${plan.bitrate / 1000} kbps\n")
-                append("Size: ${"%.1f".format(output.length() / 1e6)} MB · $encodedFrames frames in ${"%.1f".format(seconds)} s")
-                // The encoder surface can drop frames under load; make that visible.
-                if (encodedFrames != frames) append(" (rendered $frames)")
-                append("\n")
+                append("Size: ${"%.1f".format(output.length() / 1e6)} MB in ${"%.1f".format(seconds)} s\n")
+                append("Frames: source $sourceSamples → decoded $decodedFrames → encoded $encodedFrames")
+                if (frames != decodedFrames) append(" (kept $frames)")
+                append(" · B-frames: ${if (reorderedFrames == 0) "none" else reorderedFrames}\n")
                 append("Decoder: $decoderNote\n")
                 append("Encoder: $encoderName → $producedProfile\n")
                 append("Decoded as: ${c.transfer} · ${standardName(c.standard)} · ${if (c.fullRange) "full" else "limited"}")
                 if (c.transfer == Transfer.PQ) append(" · peak ${c.peakNits.toInt()} nits")
+                append("\nSampling: $sampling")
             }
         } catch (e: Exception) {
             val name = decoder?.name
@@ -372,7 +390,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
             runCatching { encoder?.stop() }
             runCatching { encoder?.release() }
             runCatching { renderer?.release() }
-            runCatching { input?.release() }
+            runCatching { yuv?.release() }
             runCatching { egl?.release() }
             if (muxerStarted) runCatching { muxer?.stop() }
             runCatching { muxer?.release() }
@@ -408,7 +426,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
         return ColorSetup(transfer, standard, fullRange, peak)
     }
 
-    private fun createDecoder(format: MediaFormat, info: SourceInfo, surface: android.view.Surface, skip: Set<String>): Pair<MediaCodec, String> {
+    private fun createDecoder(format: MediaFormat, info: SourceInfo, skip: Set<String>): Pair<MediaCodec, String> {
         val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
         if (info.mime == MediaFormat.MIMETYPE_VIDEO_DOLBY_VISION) {
             // Profiles 8 and 9 carry a standard HEVC/AVC base layer (HLG or HDR10) plus RPU metadata.
@@ -425,7 +443,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
                     removeKey(MediaFormat.KEY_LEVEL)
                 }
                 try {
-                    val (codec, name) = configureDecoder(list, base, surface, skip, info.isHdr)
+                    val (codec, name) = configureDecoder(list, base, skip, info.isHdr)
                     return codec to "$name (Dolby Vision base layer)"
                 } catch (e: Exception) {
                     Log.w("Base-layer decoder failed, falling back to Dolby Vision decoder: $e")
@@ -434,7 +452,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
             // Ask the Dolby Vision decoder for HLG output, as Dolby recommends for transcoding on Android.
             format.setInteger(MediaFormat.KEY_COLOR_TRANSFER_REQUEST, MediaFormat.COLOR_TRANSFER_HLG)
         }
-        return configureDecoder(list, format, surface, skip, info.isHdr)
+        return configureDecoder(list, format, skip, info.isHdr)
     }
 
     /**
@@ -442,7 +460,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
      * MIME type, since advertised capabilities are often conservative. For 10-bit sources, decoders
      * that advertise a 10-bit profile go first; then hardware before software.
      */
-    private fun configureDecoder(list: MediaCodecList, format: MediaFormat, surface: android.view.Surface, skip: Set<String>, tenBit: Boolean): Pair<MediaCodec, String> {
+    private fun configureDecoder(list: MediaCodecList, format: MediaFormat, skip: Set<String>, tenBit: Boolean): Pair<MediaCodec, String> {
         val mime = format.getString(MediaFormat.KEY_MIME)!!
         val all = list.codecInfos.filter { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mime, true) } }
         fun rank(c: MediaCodecInfo): Int {
@@ -456,7 +474,16 @@ class Optimizer(private val context: Context, private val source: Uri) {
         for (name in names) {
             val codec = MediaCodec.createByCodecName(name)
             try {
-                codec.configure(format, surface, null, 0)
+                // CPU-visible YUV output (see YuvTextures): P010 keeps all 10 bits of HDR sources.
+                val formats = list.codecInfos.first { it.name == name }.getCapabilitiesForType(mime).colorFormats
+                val p010 = tenBit && MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010 in formats
+                val configured = MediaFormat(format).apply {
+                    setInteger(
+                        MediaFormat.KEY_COLOR_FORMAT,
+                        if (p010) MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010 else MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
+                    )
+                }
+                codec.configure(configured, null, null, 0)
                 return codec to name
             } catch (e: Exception) {
                 codec.release()
@@ -482,6 +509,12 @@ class Optimizer(private val context: Context, private val source: Uri) {
                     setInteger(MediaFormat.KEY_BIT_RATE, plan.bitrate)
                     setInteger(MediaFormat.KEY_FRAME_RATE, plan.fps)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                    // No B-frames: MediaMuxer writes broken timing for reordered H.264 on some Android
+                    // versions, which plays back as stutter (Media3 disables them for the same reason).
+                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                    setInteger(MediaFormat.KEY_LATENCY, 1)
+                    // Offline transcode: best effort instead of real-time priority.
+                    setInteger(MediaFormat.KEY_PRIORITY, 1)
                     // Tag output as SDR BT.709 limited range so every player decodes it the same way.
                     setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
                     setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
@@ -513,8 +546,6 @@ class Optimizer(private val context: Context, private val source: Uri) {
 
     private companion object {
         const val TIMEOUT_US = 10_000L
-        const val MAX_LONG = 1920
-        const val MAX_SHORT = 1080
         const val BITS_PER_PIXEL = 0.18f
 
         val TEN_BIT_PROFILES = setOf(

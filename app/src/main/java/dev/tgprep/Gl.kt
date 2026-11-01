@@ -1,22 +1,22 @@
 package dev.tgprep
 
-import android.graphics.SurfaceTexture
+import android.graphics.ImageFormat
+import android.media.Image
+import android.media.MediaFormat
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
 import android.opengl.EGLExt
 import android.opengl.EGLSurface
-import android.opengl.GLES11Ext
-import android.opengl.GLES20
-import android.os.Handler
-import android.os.HandlerThread
+import android.opengl.GLES30
 import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import kotlin.math.min
 
-/** EGL context bound to the encoder's input surface. */
+/** GLES 3 context bound to the encoder's input surface. */
 class EglCore(encoderSurface: Surface) {
     private val display: EGLDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
     private val context: EGLContext
@@ -25,10 +25,10 @@ class EglCore(encoderSurface: Surface) {
     init {
         val version = IntArray(2)
         check(EGL14.eglInitialize(display, version, 0, version, 1)) { "eglInitialize failed" }
-        val config = chooseConfig(EGL14.EGL_OPENGL_ES2_BIT) ?: error("No recordable EGL config")
+        val config = chooseConfig() ?: error("No recordable GLES 3 EGL config")
         context = EGL14.eglCreateContext(
             display, config, EGL14.EGL_NO_CONTEXT,
-            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0,
+            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE), 0,
         )
         check(context != null && context != EGL14.EGL_NO_CONTEXT) { "eglCreateContext failed" }
         surface = EGL14.eglCreateWindowSurface(display, config, encoderSurface, intArrayOf(EGL14.EGL_NONE), 0)
@@ -36,10 +36,10 @@ class EglCore(encoderSurface: Surface) {
         check(EGL14.eglMakeCurrent(display, surface, surface, context)) { "eglMakeCurrent failed" }
     }
 
-    private fun chooseConfig(renderableType: Int): EGLConfig? {
+    private fun chooseConfig(): EGLConfig? {
         val attrs = intArrayOf(
             EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, renderableType,
+            EGL14.EGL_RENDERABLE_TYPE, EGLExt.EGL_OPENGL_ES3_BIT_KHR,
             EGL_RECORDABLE_ANDROID, 1,
             EGL14.EGL_NONE,
         )
@@ -67,58 +67,6 @@ class EglCore(encoderSurface: Surface) {
     }
 }
 
-/** External OES texture that receives decoded frames from MediaCodec. */
-class FrameInput {
-    val textureId: Int
-    private val surfaceTexture: SurfaceTexture
-    val surface: Surface
-    val transform = FloatArray(16)
-    private val thread = HandlerThread("frame-input").apply { start() }
-    private val lock = Object()
-    private var frameAvailable = false
-
-    init {
-        val tex = IntArray(1)
-        GLES20.glGenTextures(1, tex, 0)
-        textureId = tex[0]
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        surfaceTexture = SurfaceTexture(textureId)
-        // Callbacks go to a separate thread because the GL thread blocks while waiting for them.
-        surfaceTexture.setOnFrameAvailableListener({
-            synchronized(lock) {
-                frameAvailable = true
-                lock.notifyAll()
-            }
-        }, Handler(thread.looper))
-        surface = Surface(surfaceTexture)
-    }
-
-    /** Wait for the frame just released by the decoder and latch it into the texture. */
-    fun awaitFrame() {
-        synchronized(lock) {
-            val deadline = System.nanoTime() + 3_000_000_000L
-            while (!frameAvailable) {
-                val leftMs = (deadline - System.nanoTime()) / 1_000_000
-                if (leftMs <= 0) error("Timed out waiting for a decoded frame")
-                lock.wait(leftMs)
-            }
-            frameAvailable = false
-        }
-        surfaceTexture.updateTexImage()
-        surfaceTexture.getTransformMatrix(transform)
-    }
-
-    fun release() {
-        surface.release()
-        surfaceTexture.release()
-        thread.quitSafely()
-    }
-}
-
 /** Color description of the decoded frames, as fed to the shader. */
 data class ColorSetup(
     val transfer: Transfer,
@@ -129,13 +77,85 @@ data class ColorSetup(
 )
 
 /**
- * Draws one decoded frame to the encoder surface: rotation, downscaling, and HDR→SDR conversion.
+ * Byte textures holding the Y, U, and V planes of one decoded frame.
  *
- * YUV→RGB is left to the GPU driver's external-texture sampler. It knows the decoder's (often
- * vendor-specific, compressed 10-bit) buffer layout and the color metadata the decoder attached.
- * Raw sampling via GL_EXT_YUV_target was removed: on a MediaTek phone it returned no chroma for
- * 10-bit buffers, which turned the whole video green.
+ * Frames come from the decoder as CPU-visible YUV (8-bit YUV_420_888 or 10-bit P010), so the
+ * YUV→RGB step runs in our shader with the exact matrix and range. Letting the GPU driver sample the
+ * decoder's surface instead gave wrong colors on real devices: a green image with GL_EXT_YUV_target
+ * and a pink cast with the driver's own conversion of 10-bit BT.2020 buffers.
  */
+class YuvTextures {
+    val ids = IntArray(3).also { GLES30.glGenTextures(3, it, 0) }
+    /** Bits to shift right to get the code value (6 for MSB-aligned P010). */
+    var shift = 0; private set
+    var bytesPerSample = 1; private set
+    /** Bytes between horizontally adjacent samples in each plane. */
+    val pixelStrides = IntArray(3)
+    var bitDepth = 8; private set
+    var width = 0; private set
+    var height = 0; private set
+    var crop = android.graphics.Rect(); private set
+    private val allocated = Array(3) { IntArray(3) } // width, height, internal format
+    private var staging: ByteBuffer = ByteBuffer.allocateDirect(0)
+
+    /** Copy [image]'s planes into the textures. The image can be closed afterwards. */
+    fun upload(image: Image) {
+        bytesPerSample = when (image.format) {
+            ImageFormat.YUV_420_888 -> 1
+            ImageFormat.YCBCR_P010 -> 2
+            else -> error("Unsupported decoder image format ${image.format}")
+        }
+        bitDepth = if (bytesPerSample == 2) 10 else 8
+        shift = if (bytesPerSample == 2) 6 else 0
+        width = image.width
+        height = image.height
+        crop = image.cropRect
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glPixelStorei(GLES30.GL_UNPACK_ROW_LENGTH, 0)
+        image.planes.forEachIndexed { i, plane ->
+            val w = if (i == 0) image.width else (image.width + 1) / 2
+            val h = if (i == 0) image.height else (image.height + 1) / 2
+            val ps = plane.pixelStride
+            // Each plane goes up as raw bytes in an RGBA8 texture (4 bytes per texel) and the shader picks
+            // the bytes it needs. RGBA8 is the one format every GPU and the emulator handle reliably.
+            check(ps in 1..4 && ps >= bytesPerSample && plane.rowStride % 4 == 0) {
+                "Unsupported plane layout: pixelStride=$ps rowStride=${plane.rowStride}"
+            }
+            pixelStrides[i] = ps
+            val internal = GLES30.GL_RGBA8
+            val format = GLES30.GL_RGBA
+            val type = GLES30.GL_UNSIGNED_BYTE
+            // The texture spans the whole row stride, so rows upload without GL_UNPACK_ROW_LENGTH (which
+            // the emulator's GL encoder mis-sizes). The shader only reads the visible w x h part.
+            val texWidth = plane.rowStride / 4
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, ids[i])
+            val a = allocated[i]
+            if (a[0] != texWidth || a[1] != h || a[2] != internal) {
+                GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, internal, texWidth, h, 0, format, type, null)
+                // Exact texel values are needed to rebuild 16-bit samples; the shader interpolates itself.
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
+                GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
+                a[0] = texWidth; a[1] = h; a[2] = internal
+            }
+            // Copy into our own buffer first: GL must not read the decoder's memory directly (on the
+            // emulator that deadlocks), and the plane usually ends right after the last sample, so the
+            // last row is shorter than the stride and gets zero-padded here.
+            val bytes = plane.rowStride * h
+            if (staging.capacity() < bytes) staging = ByteBuffer.allocateDirect(bytes)
+            staging.clear()
+            staging.put(plane.buffer.duplicate().position(0) as ByteBuffer)
+            while (staging.position() < bytes) staging.put(0)
+            staging.flip()
+            GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, texWidth, h, format, type, staging)
+        }
+        val err = GLES30.glGetError()
+        check(err == GLES30.GL_NO_ERROR) { "Texture upload failed: GL error 0x${Integer.toHexString(err)}" }
+    }
+
+    fun release() = GLES30.glDeleteTextures(3, ids, 0)
+}
+
+/** Draws one decoded frame to the encoder surface: YUV→RGB, rotation, downscaling, and HDR→SDR conversion. */
 class Renderer(
     private val color: ColorSetup,
     rotation: Int,
@@ -144,17 +164,15 @@ class Renderer(
     private val outWidth: Int,
     private val outHeight: Int,
 ) {
-    private val program: Int
+    private val program: Int = buildProgram(VERTEX, FRAGMENT_HEADER + FRAGMENT_COMMON).also { check(it != 0) { "Shader build failed" } }
     private val vertices: FloatBuffer
     private val tapX: Float
     private val tapY: Float
 
     init {
-        program = buildProgram(VERTEX, FRAGMENT_HEADER + FRAGMENT_COMMON)
-        check(program != 0) { "Shader build failed" }
-
         // Quad corners (x, y) with the source texture coordinate that lands there after rotation.
-        // Rotation is clockwise degrees needed to display the decoded frame upright.
+        // Rotation is clockwise degrees needed to display the decoded frame upright. Texture t runs
+        // bottom-up here; the vertex shader flips it to the image's top-down row order.
         val display = arrayOf(floatArrayOf(0f, 0f), floatArrayOf(1f, 0f), floatArrayOf(0f, 1f), floatArrayOf(1f, 1f))
         val pos = arrayOf(floatArrayOf(-1f, -1f), floatArrayOf(1f, -1f), floatArrayOf(-1f, 1f), floatArrayOf(1f, 1f))
         val data = FloatArray(16)
@@ -180,87 +198,177 @@ class Renderer(
         tapY = if (needTaps) ratioY / 4f / srcHeight else 0f
     }
 
-    fun draw(input: FrameInput) {
-        GLES20.glViewport(0, 0, outWidth, outHeight)
-        GLES20.glUseProgram(program)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, input.textureId)
-        GLES20.glUniform1i(loc("sTex"), 0)
-        GLES20.glUniformMatrix4fv(loc("uSt"), 1, false, input.transform, 0)
-        GLES20.glUniform1i(loc("uTransfer"), color.transfer.ordinal)
-        GLES20.glUniform1f(loc("uSrcPeak"), color.peakNits)
-        GLES20.glUniform2f(loc("uTap"), tapX, tapY)
-        val aPos = GLES20.glGetAttribLocation(program, "aPos")
-        val aTex = GLES20.glGetAttribLocation(program, "aTex")
+    fun draw(frame: YuvTextures) {
+        GLES30.glViewport(0, 0, outWidth, outHeight)
+        GLES30.glUseProgram(program)
+        for (i in 0 until 3) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0 + i)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, frame.ids[i])
+        }
+        GLES30.glUniform1i(loc("sY"), 0)
+        GLES30.glUniform1i(loc("sU"), 1)
+        GLES30.glUniform1i(loc("sV"), 2)
+        val c = frame.crop
+        GLES30.glUniform4f(loc("uCrop"), c.left.toFloat(), c.top.toFloat(), c.width().toFloat(), c.height().toFloat())
+        GLES30.glUniform2i(loc("uLumaSize"), frame.width, frame.height)
+        GLES30.glUniform2i(loc("uChromaSize"), (frame.width + 1) / 2, (frame.height + 1) / 2)
+        GLES30.glUniform1f(loc("uShiftDiv"), (1 shl frame.shift).toFloat())
+        GLES30.glUniform1i(loc("uBytes"), frame.bytesPerSample)
+        GLES30.glUniform3i(loc("uPixelStride"), frame.pixelStrides[0], frame.pixelStrides[1], frame.pixelStrides[2])
+        val (matrix, offset) = yuvToRgb(color.standard, color.fullRange, frame.bitDepth)
+        GLES30.glUniformMatrix3fv(loc("uYuvToRgb"), 1, false, matrix, 0)
+        GLES30.glUniform3f(loc("uYuvOffset"), offset[0], offset[1], offset[2])
+        GLES30.glUniform1f(loc("uMaxCode"), ((1 shl frame.bitDepth) - 1).toFloat())
+        GLES30.glUniform1i(loc("uTransfer"), color.transfer.ordinal)
+        GLES30.glUniform1f(loc("uSrcPeak"), color.peakNits)
+        GLES30.glUniform2f(loc("uTap"), tapX, tapY)
+        val aPos = GLES30.glGetAttribLocation(program, "aPos")
+        val aTex = GLES30.glGetAttribLocation(program, "aTex")
         vertices.position(0)
-        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 16, vertices)
-        GLES20.glEnableVertexAttribArray(aPos)
+        GLES30.glVertexAttribPointer(aPos, 2, GLES30.GL_FLOAT, false, 16, vertices)
+        GLES30.glEnableVertexAttribArray(aPos)
         vertices.position(2)
-        GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, vertices)
-        GLES20.glEnableVertexAttribArray(aTex)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        val err = GLES20.glGetError()
-        check(err == GLES20.GL_NO_ERROR) { "GL error 0x${Integer.toHexString(err)}" }
+        GLES30.glVertexAttribPointer(aTex, 2, GLES30.GL_FLOAT, false, 16, vertices)
+        GLES30.glEnableVertexAttribArray(aTex)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        val err = GLES30.glGetError()
+        check(err == GLES30.GL_NO_ERROR) { "GL error 0x${Integer.toHexString(err)}" }
     }
 
-    fun release() = GLES20.glDeleteProgram(program)
+    fun release() = GLES30.glDeleteProgram(program)
 
-    private fun loc(name: String) = GLES20.glGetUniformLocation(program, name)
+    private fun loc(name: String) = GLES30.glGetUniformLocation(program, name)
 
     private fun buildProgram(vertex: String, fragment: String): Int {
-        val vs = compile(GLES20.GL_VERTEX_SHADER, vertex)
-        val fs = compile(GLES20.GL_FRAGMENT_SHADER, fragment)
+        val vs = compile(GLES30.GL_VERTEX_SHADER, vertex)
+        val fs = compile(GLES30.GL_FRAGMENT_SHADER, fragment)
         if (vs == 0 || fs == 0) return 0
-        val prog = GLES20.glCreateProgram()
-        GLES20.glAttachShader(prog, vs)
-        GLES20.glAttachShader(prog, fs)
-        GLES20.glLinkProgram(prog)
+        val prog = GLES30.glCreateProgram()
+        GLES30.glAttachShader(prog, vs)
+        GLES30.glAttachShader(prog, fs)
+        GLES30.glLinkProgram(prog)
         val status = IntArray(1)
-        GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, status, 0)
-        GLES20.glDeleteShader(vs)
-        GLES20.glDeleteShader(fs)
+        GLES30.glGetProgramiv(prog, GLES30.GL_LINK_STATUS, status, 0)
+        GLES30.glDeleteShader(vs)
+        GLES30.glDeleteShader(fs)
         if (status[0] == 0) {
-            Log.w("link failed: ${GLES20.glGetProgramInfoLog(prog)}")
-            GLES20.glDeleteProgram(prog)
+            Log.w("link failed: ${GLES30.glGetProgramInfoLog(prog)}")
+            GLES30.glDeleteProgram(prog)
             return 0
         }
         return prog
     }
 
     private fun compile(type: Int, source: String): Int {
-        val shader = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(shader, source)
-        GLES20.glCompileShader(shader)
+        val shader = GLES30.glCreateShader(type)
+        GLES30.glShaderSource(shader, source)
+        GLES30.glCompileShader(shader)
         val status = IntArray(1)
-        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
+        GLES30.glGetShaderiv(shader, GLES30.GL_COMPILE_STATUS, status, 0)
         if (status[0] == 0) {
-            Log.w("compile failed: ${GLES20.glGetShaderInfoLog(shader)}")
-            GLES20.glDeleteShader(shader)
+            Log.w("compile failed: ${GLES30.glGetShaderInfoLog(shader)}")
+            GLES30.glDeleteShader(shader)
             return 0
         }
         return shader
     }
 
     companion object {
-        private const val VERTEX = """
-attribute vec4 aPos;
-attribute vec4 aTex;
-uniform mat4 uSt;
-varying vec2 vTex;
+        /**
+         * Return a column-major YUV→RGB matrix and the YUV offset for the given color standard and range.
+         *
+         * Values are for normalized samples (code / (2^bits - 1)), as produced by the shader's fetch.
+         */
+        fun yuvToRgb(standard: Int, fullRange: Boolean, bitDepth: Int): Pair<FloatArray, FloatArray> {
+            val (kr, kb) = when (standard) {
+                MediaFormat.COLOR_STANDARD_BT2020 -> 0.2627 to 0.0593
+                MediaFormat.COLOR_STANDARD_BT601_PAL, MediaFormat.COLOR_STANDARD_BT601_NTSC -> 0.299 to 0.114
+                else -> 0.2126 to 0.0722
+            }
+            val kg = 1 - kr - kb
+            val max = ((1 shl bitDepth) - 1).toDouble()
+            val scale = (1 shl (bitDepth - 8)).toDouble()
+            val yOff = if (fullRange) 0.0 else 16 * scale / max
+            val yScale = if (fullRange) 1.0 else max / (219 * scale)
+            val cScale = if (fullRange) 1.0 else max / (224 * scale)
+            val cOff = 128 * scale / max
+            val m = floatArrayOf(
+                // column 0: Y
+                yScale.toFloat(), yScale.toFloat(), yScale.toFloat(),
+                // column 1: Cb
+                0f, (-2 * kb * (1 - kb) / kg * cScale).toFloat(), (2 * (1 - kb) * cScale).toFloat(),
+                // column 2: Cr
+                (2 * (1 - kr) * cScale).toFloat(), (-2 * kr * (1 - kr) / kg * cScale).toFloat(), 0f,
+            )
+            return m to floatArrayOf(yOff.toFloat(), cOff.toFloat(), cOff.toFloat())
+        }
+
+        private const val VERTEX = """#version 300 es
+in vec4 aPos;
+in vec4 aTex;
+out vec2 vTex;
 void main() {
     gl_Position = aPos;
-    vTex = (uSt * aTex).xy;
+    vTex = vec2(aTex.x, 1.0 - aTex.y);
 }
 """
 
-        private const val FRAGMENT_HEADER = """
-#extension GL_OES_EGL_image_external : require
+        /**
+         * Fetch Y'CbCr from the plane textures and convert to R'G'B'. Positions are in luma pixels
+         * (pixel centers at i + 0.5). 4:2:0 chroma uses the default MPEG-2/H.264/HEVC siting: co-sited
+         * with even luma columns horizontally, halfway between luma rows vertically.
+         */
+        private const val FRAGMENT_HEADER = """#version 300 es
 precision highp float;
-uniform samplerExternalOES sTex;
-varying vec2 vTex;
-#define FRAG_COLOR gl_FragColor
+uniform sampler2D sY;
+uniform sampler2D sU;
+uniform sampler2D sV;
+uniform vec4 uCrop;         // visible rect in luma pixels: x, y, w, h
+uniform ivec2 uLumaSize;
+uniform ivec2 uChromaSize;
+uniform float uShiftDiv;    // 64 for MSB-aligned P010, else 1
+uniform int uBytes;         // bytes per sample: 1, or 2 for little-endian 16-bit
+uniform ivec3 uPixelStride; // bytes between adjacent samples in the Y, U, V planes
+uniform float uMaxCode;
+uniform mat3 uYuvToRgb;
+uniform vec3 uYuvOffset;
+in vec2 vTex;
+out vec4 fragColor;
+#define FRAG_COLOR fragColor
+
+float byteAt(sampler2D s, int x, int y) {
+    vec4 t = texelFetch(s, ivec2(x >> 2, y), 0);
+    return floor(t[x & 3] * 255.0 + 0.5);
+}
+
+// Code value of the sample at p (in samples, clamped to the visible plane), normalized to 0..1.
+float fetch(sampler2D s, int stride, ivec2 p, ivec2 size) {
+    p = clamp(p, ivec2(0), size - 1);
+    int x = p.x * stride;
+    float v = byteAt(s, x, p.y);
+    if (uBytes == 2) v += 256.0 * byteAt(s, x + 1, p.y);
+    return floor(v / uShiftDiv) / uMaxCode;
+}
+
+float bilinear(sampler2D s, int stride, vec2 pos, ivec2 size) {
+    vec2 q = pos - 0.5;
+    vec2 f = fract(q);
+    ivec2 i = ivec2(floor(q));
+    float a = fetch(s, stride, i, size);
+    float b = fetch(s, stride, i + ivec2(1, 0), size);
+    float c = fetch(s, stride, i + ivec2(0, 1), size);
+    float d = fetch(s, stride, i + ivec2(1, 1), size);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 vec3 signalAt(vec2 uv) {
-    return texture2D(sTex, uv).rgb;
+    vec2 p = uCrop.xy + clamp(uv, 0.0, 1.0) * uCrop.zw;
+    vec2 pc = vec2(p.x * 0.5 + 0.25, p.y * 0.5);
+    vec3 yuv = vec3(
+        bilinear(sY, uPixelStride.x, p, uLumaSize),
+        bilinear(sU, uPixelStride.y, pc, uChromaSize),
+        bilinear(sV, uPixelStride.z, pc, uChromaSize));
+    return clamp(uYuvToRgb * (yuv - uYuvOffset), 0.0, 1.0);
 }
 """
 
