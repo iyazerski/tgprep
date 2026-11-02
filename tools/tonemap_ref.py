@@ -24,7 +24,9 @@ def hlg_inverse_oetf(e: np.ndarray) -> np.ndarray:
 def hlg_oetf(x: np.ndarray) -> np.ndarray:
     """Return the HLG signal for scene-linear light (0..1)."""
     x = np.asarray(x, dtype=np.float64)
-    return np.where(x <= 1 / 12, np.sqrt(3 * x), 0.17883277 * np.log(np.maximum(12 * x - 0.28466892, 1e-12)) + 0.55991073)
+    return np.where(
+        x <= 1 / 12, np.sqrt(3 * x), 0.17883277 * np.log(np.maximum(12 * x - 0.28466892, 1e-12)) + 0.55991073
+    )
 
 
 def hlg_to_sdr_code(rgb_hlg: np.ndarray) -> np.ndarray:

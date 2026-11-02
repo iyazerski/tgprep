@@ -1,6 +1,10 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["numpy"]
+# ///
 """Generate a portrait HLG BT.2020 10-bit HEVC test clip stored with 90° rotation, like phone video.
 
-Usage: uv run --with numpy tools/make_hlg_test.py OUT.mp4 [--size 2160x3840] [--seconds 2] [--codec hevc|av1]
+Usage: uv run tools/make_hlg_test.py OUT.mp4 [--size 2160x3840] [--seconds 2] [--codec hevc|av1]
 
 Use --codec av1 on the Android emulator: its HEVC decoders can't do 10-bit, its AV1 decoder can.
 
@@ -69,8 +73,12 @@ def main() -> None:
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--codec", choices=["hevc", "av1"], default="hevc")
     ap.add_argument("--bits", type=int, choices=[8, 10], default=10, help="8 = HLG-tagged 8-bit (emulator GPU test)")
-    ap.add_argument("--matrix", choices=["bt2020", "bt601"], default="bt2020",
-                    help="YUV matrix; bt601 sidesteps GPU drivers that ignore BT.2020 (emulator)")
+    ap.add_argument(
+        "--matrix",
+        choices=["bt2020", "bt601"],
+        default="bt2020",
+        help="YUV matrix; bt601 sidesteps GPU drivers that ignore BT.2020 (emulator)",
+    )
     ap.add_argument("--transfer", choices=["hlg", "sdr"], default="hlg", help="sdr: tag values as BT.601 SDR")
     args = ap.parse_args()
     w, h = map(int, args.size.split("x"))
@@ -81,22 +89,77 @@ def main() -> None:
     av1_ids = {"bt2020": 9, "smpte170m": 6, "arib-std-b67": 18, "bt2020nc": 9}
     # Stored frame is the upright frame rotated 90° counter-clockwise (stored size h x w).
     cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-display_rotation", "-90", "-noautorotate",
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-display_rotation",
+        "-90",
+        "-noautorotate",
         # Tag the raw input like the output, or ffmpeg converts the samples to the output matrix.
-        "-color_primaries", prim, "-color_trc", trc, "-colorspace", space, "-color_range", "tv",
-        "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s", f"{h}x{w}", "-r", str(args.fps), "-i", "-",
-        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={args.seconds}",
+        "-color_primaries",
+        prim,
+        "-color_trc",
+        trc,
+        "-colorspace",
+        space,
+        "-color_range",
+        "tv",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "yuv420p10le",
+        "-s",
+        f"{h}x{w}",
+        "-r",
+        str(args.fps),
+        "-i",
+        "-",
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency=440:sample_rate=48000:duration={args.seconds}",
         *(
-            ["-c:v", "libx265", "-preset", "fast", "-crf", "16", "-tag:v", "hvc1",
-             "-x265-params", f"colorprim={prim}:transfer={trc}:colormatrix={space}:range=limited:log-level=error"]
+            [
+                "-c:v",
+                "libx265",
+                "-preset",
+                "fast",
+                "-crf",
+                "16",
+                "-tag:v",
+                "hvc1",
+                "-x265-params",
+                f"colorprim={prim}:transfer={trc}:colormatrix={space}:range=limited:log-level=error",
+            ]
             if args.codec == "hevc"
-            else ["-c:v", "libsvtav1", "-preset", "8", "-crf", "20",
-                  "-svtav1-params", f"color-primaries={av1_ids[prim]}:transfer-characteristics={av1_ids[trc]}:matrix-coefficients={av1_ids[space]}:color-range=0"]
+            else [
+                "-c:v",
+                "libsvtav1",
+                "-preset",
+                "8",
+                "-crf",
+                "20",
+                "-svtav1-params",
+                f"color-primaries={av1_ids[prim]}:transfer-characteristics={av1_ids[trc]}:matrix-coefficients={av1_ids[space]}:color-range=0",
+            ]
         ),
-        "-pix_fmt", "yuv420p10le" if args.bits == 10 else "yuv420p",
-        "-color_primaries", prim, "-color_trc", trc, "-colorspace", space, "-color_range", "tv",
-        "-c:a", "aac", "-b:a", "128k", "-shortest",
+        "-pix_fmt",
+        "yuv420p10le" if args.bits == 10 else "yuv420p",
+        "-color_primaries",
+        prim,
+        "-color_trc",
+        trc,
+        "-colorspace",
+        space,
+        "-color_range",
+        "tv",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-shortest",
         args.out,
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)

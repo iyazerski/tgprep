@@ -122,17 +122,25 @@ the encoder, the encoded frame count, and the H.264 profile it actually produced
 
 ## Build
 
-Requirements: JDK 17 and the Android SDK (platform 36, build-tools). The Gradle wrapper
-downloads Gradle 9.8.2 and AGP 9.5.0.
+Requirements: any JDK to start the Gradle wrapper, and the Android SDK (platform 36, build-tools).
+The wrapper downloads Gradle 9.8.2 and AGP 9.5.0. Gradle itself runs on JDK 21
+(`gradle/gradle-daemon-jvm.properties`) and downloads it if it isn't installed.
 
 ```sh
 echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home   # macOS/Homebrew
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home   # macOS/Homebrew
 ./gradlew lintRelease assembleRelease
 # → app/build/outputs/apk/release/app-release.apk
 ```
 
-`minSdk` is 33 and `targetSdk` is 36 (Android 16). The release build is minified.
+The configuration cache and build cache are on (`gradle.properties`), so a repeat build with no
+changes takes about a second.
+
+`minSdk` is 33 and `targetSdk` is 36 (Android 16). The release build is shrunk with R8.
+
+Checks: `prek run --all-files` runs Android lint plus ruff on the Python tools (`ruff.toml`).
+`prek install` runs them before every commit. The tools declare their own dependencies
+(inline script metadata), so `uv run tools/<script>.py` needs no extra flags.
 
 Signing: if `TGPREP_KEYSTORE` (a path) and `TGPREP_KEYSTORE_PASSWORD` are set, the release is
 signed with that key (alias `tgprep`). Otherwise the local debug key is used. `BUILD_NUMBER` sets
@@ -179,9 +187,9 @@ SDR values with the same math as the shader. `check_output.py` checks the passth
 and compares every patch, with a tolerance of 6 codes.
 
 ```sh
-uv run --with numpy tools/make_hlg_test.py /tmp/hlg.mp4 --size 2160x3840          # phone: HEVC 10-bit 4K
-uv run tools/adb_run.py /tmp/hlg.mp4 /tmp/out    # push, open in app, Optimize, save, pull
-cd tools && uv run --with numpy check_output.py /tmp/out/*_TG*.mp4
+uv run tools/make_hlg_test.py /tmp/hlg.mp4 --size 2160x3840          # phone: HEVC 10-bit 4K
+uv run tools/adb_run.py /tmp/hlg.mp4 /tmp/out    # push, pick in app, Optimize, save, pull
+uv run tools/check_output.py /tmp/out/*_TG*.mp4
 ```
 
 DV 8.4 variant: inject an RPU with `dovi_tool inject-rpu`, mux with

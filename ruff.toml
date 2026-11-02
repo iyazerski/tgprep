@@ -1,0 +1,8 @@
+# Lint and format settings for the Python test tools (run with `uvx ruff`).
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# The formatter handles line length; it leaves long string literals as they are.
+ignore = ["E501"]

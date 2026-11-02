@@ -1,4 +1,8 @@
-"""Drive TG Prep over adb: open a local video in it, tap Optimize, save the result, pull it.
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Drive TG Prep over adb: pick a local video in it, tap Optimize, save the result, pull it.
 
 Usage: uv run tools/adb_run.py VIDEO.mp4 OUT_DIR
 Works on an emulator or a USB-connected phone (screen unlocked).
@@ -25,9 +29,16 @@ def ui_nodes() -> list[ET.Element]:
     return list(ET.fromstring(adb("shell", "cat", "/sdcard/ui.xml")).iter("node"))
 
 
-def find_text(pattern: str) -> ET.Element | None:
-    """Return the first node whose text matches the regex."""
-    return next((n for n in ui_nodes() if re.search(pattern, n.get("text", ""))), None)
+def find(pattern: str) -> ET.Element | None:
+    """Return the first node whose text or content description matches the regex."""
+    return next(
+        (
+            n
+            for n in ui_nodes()
+            if re.search(pattern, n.get("text", "")) or re.search(pattern, n.get("content-desc", ""))
+        ),
+        None,
+    )
 
 
 def tap(node: ET.Element) -> None:
@@ -40,7 +51,7 @@ def wait_for(pattern: str, timeout: float = 300) -> ET.Element:
     """Poll the UI until a node's text matches the regex."""
     end = time.time() + timeout
     while time.time() < end:
-        if (node := find_text(pattern)) is not None:
+        if (node := find(pattern)) is not None:
             return node
         time.sleep(1.5)
     raise SystemExit(f"timeout waiting for {pattern!r}")
@@ -57,29 +68,50 @@ def main() -> None:
     adb("shell", "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", f"file://{remote}")
     uri = None
     for _ in range(20):
-        rows = adb("shell", "content", "query", "--uri", "content://media/external/video/media", "--projection",
-                   "_id", "--where", f"\"relative_path='DCIM/TgPrepTest/' AND _display_name='{video.name}'\"")
+        rows = adb(
+            "shell",
+            "content",
+            "query",
+            "--uri",
+            "content://media/external/video/media",
+            "--projection",
+            "_id",
+            "--where",
+            f"\"relative_path='DCIM/TgPrepTest/' AND _display_name='{video.name}'\"",
+        )
         if m := re.search(r"_id=(\d+)", rows):
             uri = f"content://media/external/video/media/{m.group(1)}"
             break
         time.sleep(0.5)
     if uri is None:
         raise SystemExit(f"MediaStore did not index {remote}")
+    # Opening the clip with Share/VIEW sends it straight to Telegram, so use the launcher flow instead:
+    # Pick video -> system photo picker -> the clip (newest first, as it was just added).
     adb("shell", "am", "force-stop", "dev.tgprep")
-    adb(
-        "shell", "am", "start", "-a", "android.intent.action.VIEW", "-t", "video/mp4",
-        "-d", uri, "--grant-read-uri-permission", "-n", "dev.tgprep/.MainActivity",
-    )
+    adb("shell", "am", "start", "-n", "dev.tgprep/.MainActivity")
+    # The photo picker indexes new media in the background, so a fresh clip can be missing on the first
+    # open. Reopen it until the clip shows up.
+    for _ in range(5):
+        tap(wait_for(r"^Pick video$", 30))
+        try:
+            tap(wait_for(r"^Video taken", 8))
+            break
+        except SystemExit:
+            adb("shell", "input", "keyevent", "4")
+    else:
+        raise SystemExit("the photo picker never showed the clip")
     tap(wait_for(r"^Optimize for Telegram$", 30))
     t0 = time.time()
-    done = wait_for(r"^(Done|Failed)")
+    done = wait_for(r"^(Ready to send|Couldn't)")
     print(f"finished in ~{time.time() - t0:.0f}s: {done.get('text')!r}")
-    details = max((n.get("text", "") for n in ui_nodes()), key=len)
-    print(details)
-    if done.get("text", "").startswith("Failed"):
+    tap(wait_for(r"^Technical details$", 10))
+    time.sleep(1.5)
+    print(max((n.get("text", "") for n in ui_nodes()), key=len))
+    adb("shell", "input", "keyevent", "4")
+    if done.get("text", "").startswith("Couldn't"):
         raise SystemExit(1)
-    tap(wait_for(r"^Save copy to gallery$", 10))
-    time.sleep(3)
+    tap(wait_for(r"^Save to gallery$", 10))
+    wait_for(r"^Saved to gallery$", 30)
     # The gallery copy lands in the camera folder; take the newest one (never delete the user's files).
     newest = adb("shell", "ls -t /sdcard/DCIM/Camera/*_TG*.mp4 | head -n 1").strip()
     if not newest:

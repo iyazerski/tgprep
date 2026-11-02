@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Compare the original recording, the TG Prep output, and the file received through Telegram.
 
 Usage: uv run tools/compare.py ORIGINAL.mp4 OPTIMIZED.mp4 [RECEIVED.mp4] [--out DIR]
@@ -53,9 +57,22 @@ def quality(reference: str, test: str) -> str:
     """Return SSIM and PSNR of test against reference (test scaled to the reference size)."""
     ref = info(reference)["resolution"].replace("x", ":")
     log = subprocess.run(
-        ["ffmpeg", "-v", "info", "-i", reference, "-i", test, "-lavfi",
-         f"[1:v]scale={ref}:flags=bicubic,split[t1][t2];[0:v]split[r1][r2];[r1][t1]ssim;[r2][t2]psnr", "-f", "null", "-"],
-        capture_output=True, text=True,
+        [
+            "ffmpeg",
+            "-v",
+            "info",
+            "-i",
+            reference,
+            "-i",
+            test,
+            "-lavfi",
+            f"[1:v]scale={ref}:flags=bicubic,split[t1][t2];[0:v]split[r1][r2];[r1][t1]ssim;[r2][t2]psnr",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
     ).stderr
     ssim = re.search(r"SSIM .*All:([\d.]+)", log)
     psnr = re.search(r"PSNR .*average:([\d.inf]+)", log)
@@ -69,10 +86,27 @@ def has_filter(name: str) -> bool:
 
 def frames(path: str, out: Path, label: str, times: list[float], hdr_tonemap: bool) -> None:
     """Write PNG frames at the given times; tone-map HDR with libplacebo (BT.2390) when asked."""
-    vf = "libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p" if hdr_tonemap else "null"
+    vf = (
+        "libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=yuv420p"
+        if hdr_tonemap
+        else "null"
+    )
     for t in times:
-        run("ffmpeg", "-v", "error", "-y", "-ss", f"{t:.2f}", "-i", path, "-frames:v", "1", "-vf", vf,
-            str(out / f"t{t:06.2f}_{label}.png"))
+        run(
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-ss",
+            f"{t:.2f}",
+            "-i",
+            path,
+            "-frames:v",
+            "1",
+            "-vf",
+            vf,
+            str(out / f"t{t:06.2f}_{label}.png"),
+        )
 
 
 def main() -> None:
@@ -107,7 +141,9 @@ def main() -> None:
     frames(args.optimized, out, "2_optimized", times, False)
     if args.received:
         frames(args.received, out, "3_received", times, False)
-    print(f"\nFrames written to {out}/ (original {'tone-mapped with libplacebo BT.2390' if tonemap else 'shown raw; HDR will look flat'})")
+    print(
+        f"\nFrames written to {out}/ (original {'tone-mapped with libplacebo BT.2390' if tonemap else 'shown raw; HDR will look flat'})"
+    )
 
 
 if __name__ == "__main__":
