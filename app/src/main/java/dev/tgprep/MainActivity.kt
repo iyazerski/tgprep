@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.transition.AutoTransition
 import android.transition.TransitionManager
 import android.util.Size
@@ -62,6 +63,7 @@ class MainActivity : Activity() {
     private lateinit var secondaryRow: LinearLayout
     private lateinit var save: GlassButton
     private lateinit var pick: GlassButton
+    private lateinit var update: GlassButton
     private lateinit var info: GlassButton
     private lateinit var scrim: View
     private lateinit var sheet: GlassPanel
@@ -330,6 +332,19 @@ class MainActivity : Activity() {
         startActivityForResult(Intent(MediaStore.ACTION_PICK_IMAGES).setType("video/*"), REQUEST_PICK)
     }
 
+    private fun checkForUpdates() {
+        if (!packageManager.canRequestPackageInstalls()) {
+            // Android asks once per app before it may install anything, updates included.
+            Toast.makeText(this, "Allow TG Prep to install updates, then tap again", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return
+        }
+        Updater.update(this) { state ->
+            update.text = state ?: "Check for updates"
+            update.isEnabled = state == null
+        }
+    }
+
     // ---- Screen states ----
 
     private fun showIdle() {
@@ -340,6 +355,7 @@ class MainActivity : Activity() {
             subtitle = "Or pick one here. It's converted for Telegram with true-to-life colors and smooth motion.",
             primaryText = "Pick video",
             onPrimary = ::pickVideo,
+            showUpdate = true,
         )
     }
 
@@ -366,6 +382,7 @@ class MainActivity : Activity() {
         onPrimaryLong: (() -> Unit)? = null,
         showSave: Boolean = false,
         showPick: Boolean = false,
+        showUpdate: Boolean = false,
     ) {
         TransitionManager.beginDelayedTransition(
             content,
@@ -398,6 +415,7 @@ class MainActivity : Activity() {
         (save.layoutParams as LinearLayout.LayoutParams).marginEnd = if (showPick) dpi(6) else 0
         (pick.layoutParams as LinearLayout.LayoutParams).marginStart = if (showSave) dpi(6) else 0
         secondaryRow.visibility = if (showSave || showPick) View.VISIBLE else View.GONE
+        update.visibility = if (showUpdate) View.VISIBLE else View.GONE
         info.visibility = if (technical.isNotEmpty()) View.VISIBLE else View.GONE
     }
 
@@ -590,6 +608,12 @@ class MainActivity : Activity() {
         secondaryRow.addView(save, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginEnd = dpi(6) })
         secondaryRow.addView(pick, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dpi(6) })
         content.addView(secondaryRow, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(12) })
+        update = GlassButton(this).apply {
+            text = "Check for updates"
+            backdrop = this@MainActivity.backdrop
+            setOnClickListener { checkForUpdates() }
+        }
+        content.addView(update, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(12) })
 
         // Details sheet over a dimmed screen.
         scrim = View(this).apply {

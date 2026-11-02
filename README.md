@@ -5,6 +5,8 @@ video from the camera and makes a file that Telegram sends **as is**, so the col
 that other people see are the ones this app produced.
 
 **Download the latest APK:** https://github.com/iyazerski/tgprep/releases/latest/download/tgprep.apk
+After that, tap **Check for updates** on the app's start screen to update it. The first time, Android
+asks you to allow TG Prep to install apps.
 
 Flow: Gallery → Share → **TG Prep**. The app optimizes the video right away and opens Telegram's
 chat picker with the result. In Telegram, pick the top quality (1080p) → send.

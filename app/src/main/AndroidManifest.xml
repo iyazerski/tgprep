@@ -3,6 +3,9 @@
 
     <!-- Without it, MediaProvider strips the location from videos it hands to the app (Android 10+). -->
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+    <!-- Updates from GitHub releases (Updater). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Needed to target Telegram directly when sharing (package visibility, API 30+). -->
     <queries>
@@ -36,6 +39,10 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".InstallResult"
+            android:exported="false" />
 
         <provider
             android:name=".OutputProvider"
