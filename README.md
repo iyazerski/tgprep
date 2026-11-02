@@ -9,8 +9,9 @@ that other people see are the ones this app produced.
 Flow: Gallery → Share → **TG Prep**. The app optimizes the video right away and opens Telegram's
 chat picker with the result. In Telegram, pick the top quality (1080p) → send.
 
-The screen uses a "liquid glass" style: frosted panels that blur and tint the moving background
-behind them (RenderEffect), springy buttons, and animated state changes. It only shows what matters
+The screen uses a black "liquid glass" style: smoked glass panels that blur the slowly moving
+graphite light behind them (RenderEffect), solid graphite main buttons, springy presses, and animated
+state changes. It only shows what matters
 to the user (preview, HDR type, resolution, size saved). File and codec details are behind the
 **i** button.
 

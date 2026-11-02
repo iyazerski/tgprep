@@ -2,8 +2,6 @@ package dev.tgprep
 
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -28,13 +26,13 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 
-/** Colors, type, and motion shared by the UI. */
+/** Colors, type, and motion shared by the UI: monochrome, in shades of black. */
 object Style {
-    const val BACKGROUND = 0xFF070A12.toInt()
-    /** Telegram blue. */
-    const val ACCENT = 0xFF2AABEE.toInt()
-    const val TEXT = 0xFFF5F7FB.toInt()
-    const val TEXT_DIM = 0xA6F5F7FB.toInt()
+    const val BACKGROUND = 0xFF000000.toInt()
+    /** Solid graphite for opaque elements such as the main button. */
+    const val GRAPHITE = 0xFF3A3A3D.toInt()
+    const val TEXT = 0xFFF5F5F7.toInt()
+    const val TEXT_DIM = 0x99F5F5F7.toInt()
     /** Fast start, long soft landing: used for state changes. */
     val EASE = PathInterpolator(0.2f, 0.9f, 0.1f, 1f)
     val SEMIBOLD: Typeface = Typeface.create(Typeface.DEFAULT, 600, false)
@@ -45,7 +43,7 @@ fun Context.dp(value: Float): Float = value * resources.displayMetrics.density
 
 fun Context.dpi(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
-/** Deep background with soft color light that drifts slowly. Glass panels show it blurred through them. */
+/** Black background with faint graphite light that drifts slowly. Glass panels show it blurred through them. */
 class Backdrop @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
     private class Blob(val color: Int, val x: Float, val y: Float, val size: Float, val speed: Float, val phase: Float) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -54,10 +52,10 @@ class Backdrop @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
 
     private val blobs = listOf(
-        Blob(Style.ACCENT, 0.12f, 0.16f, 0.70f, 0.21f, 0f),
-        Blob(0xFF7B5CFF.toInt(), 0.95f, 0.38f, 0.65f, 0.16f, 2.1f),
-        Blob(0xFFFF5FA2.toInt(), 0.20f, 0.80f, 0.60f, 0.19f, 4.2f),
-        Blob(0xFF00C9A7.toInt(), 0.90f, 0.96f, 0.55f, 0.25f, 1.3f),
+        Blob(0xFF5A5A60.toInt(), 0.12f, 0.16f, 0.70f, 0.21f, 0f),
+        Blob(0xFF3A3A3F.toInt(), 0.95f, 0.38f, 0.65f, 0.16f, 2.1f),
+        Blob(0xFF4A4A50.toInt(), 0.20f, 0.80f, 0.60f, 0.19f, 4.2f),
+        Blob(0xFF2E2E33.toInt(), 0.90f, 0.96f, 0.55f, 0.25f, 1.3f),
     )
     private val started = SystemClock.uptimeMillis()
 
@@ -74,7 +72,7 @@ class Backdrop @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
             val rgb = b.color and 0xFFFFFF
             b.paint.shader = RadialGradient(
                 0f, 0f, b.radius,
-                intArrayOf(rgb or 0x8C000000.toInt(), rgb or 0x30000000, rgb),
+                intArrayOf(rgb or 0x80000000.toInt(), rgb or 0x2E000000, rgb),
                 floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP,
             )
         }
@@ -100,8 +98,8 @@ class Backdrop @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
 }
 
 /**
- * Frosted glass panel: shows the [backdrop] behind it blurred and slightly more saturated, under a
- * translucent tint, a soft top highlight, and a thin light-catching edge.
+ * Smoked glass panel: shows the [backdrop] behind it blurred, under a dark translucent tint, a soft
+ * top highlight, and a thin silver edge.
  */
 open class GlassPanel @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : FrameLayout(context, attrs) {
     var backdrop: Backdrop? = null
@@ -116,20 +114,14 @@ open class GlassPanel @JvmOverloads constructor(context: Context, attrs: Attribu
             updateShape()
         }
     /** Fill drawn over the blurred backdrop. */
-    var tint = 0x1AFFFFFF
+    var tint = 0x0FFFFFFF
         set(value) {
             field = value
             invalidate()
         }
 
     private val node = RenderNode("glass").apply {
-        val saturate = ColorMatrix().apply { setSaturation(1.6f) }
-        setRenderEffect(
-            RenderEffect.createChainEffect(
-                RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(saturate)),
-                RenderEffect.createBlurEffect(context.dp(36f), context.dp(36f), Shader.TileMode.CLAMP),
-            ),
-        )
+        setRenderEffect(RenderEffect.createBlurEffect(context.dp(36f), context.dp(36f), Shader.TileMode.CLAMP))
     }
     private val path = Path()
     private val edgeRect = RectF()
@@ -159,10 +151,10 @@ open class GlassPanel @JvmOverloads constructor(context: Context, attrs: Attribu
         path.addRoundRect(0f, 0f, w, h, r, r, Path.Direction.CW)
         val half = edge.strokeWidth / 2
         edgeRect.set(half, half, w - half, h - half)
-        highlight.shader = LinearGradient(0f, 0f, 0f, max(1f, min(h, context.dp(90f))), 0x24FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
+        highlight.shader = LinearGradient(0f, 0f, 0f, max(1f, min(h, context.dp(90f))), 0x14FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
         edge.shader = LinearGradient(
             0f, 0f, w, h,
-            intArrayOf(0x99FFFFFF.toInt(), 0x14FFFFFF, 0x14FFFFFF, 0x4DFFFFFF),
+            intArrayOf(0x66FFFFFF, 0x0FFFFFFF, 0x0FFFFFFF, 0x33FFFFFF),
             floatArrayOf(0f, 0.35f, 0.7f, 1f), Shader.TileMode.CLAMP,
         )
         invalidate()
@@ -215,16 +207,16 @@ class GlassButton @JvmOverloads constructor(context: Context, attrs: AttributeSe
             label.text = value
         }
 
-    /** Accent buttons are tinted Telegram blue; others are clear glass. */
+    /** Accent buttons are solid graphite; others are smoked glass. */
     var accent = false
         set(value) {
             field = value
-            tint = if (value) 0xD92AABEE.toInt() else 0x1FFFFFFF
+            tint = if (value) Style.GRAPHITE else 0x59000000
         }
 
     init {
         cornerRadius = context.dp(28f)
-        tint = 0x1FFFFFFF
+        tint = 0x59000000
         isClickable = true
         isFocusable = true
         minimumHeight = context.dpi(56)
@@ -253,7 +245,7 @@ class GlassButton @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
 /** Glossy progress bar: smooth fill with a moving sheen, or a sweeping segment while indeterminate. */
 class GlassProgress @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
-    private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x1FFFFFFF }
+    private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x1AFFFFFF }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val sheen = Paint(Paint.ANTI_ALIAS_FLAG)
     private val sheenMatrix = Matrix()
@@ -279,7 +271,7 @@ class GlassProgress @JvmOverloads constructor(context: Context, attrs: Attribute
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        fill.shader = LinearGradient(0f, 0f, w.toFloat(), 0f, Style.ACCENT, 0xFF8FE3FF.toInt(), Shader.TileMode.CLAMP)
+        fill.shader = LinearGradient(0f, 0f, w.toFloat(), 0f, 0xFF8E8E93.toInt(), 0xFFF5F5F7.toInt(), Shader.TileMode.CLAMP)
         val band = max(1f, w * 0.35f)
         sheen.shader = LinearGradient(0f, 0f, band, 0f, intArrayOf(0x00FFFFFF, 0x66FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
     }

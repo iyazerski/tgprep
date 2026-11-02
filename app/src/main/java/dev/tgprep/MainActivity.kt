@@ -420,8 +420,8 @@ class MainActivity : Activity() {
                     setPadding(dpi(12), dpi(6), dpi(12), dpi(6))
                     background = GradientDrawable().apply {
                         cornerRadius = dp(14f)
-                        setColor(0x1FFFFFFF)
-                        setStroke(dpi(1), 0x33FFFFFF)
+                        setColor(0x14FFFFFF)
+                        setStroke(dpi(1), 0x26FFFFFF)
                     }
                 },
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -543,7 +543,7 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         cardBody.addView(thumb, LinearLayout.LayoutParams(MATCH, dpi(260)).apply { bottomMargin = dpi(20) })
-        icon = ImageView(this).apply { setImageResource(R.drawable.ic_launcher) }
+        icon = ImageView(this).apply { setImageResource(R.drawable.ic_play) }
         cardBody.addView(icon, LinearLayout.LayoutParams(dpi(88), dpi(88)).apply { bottomMargin = dpi(16) })
         title = TextView(this).apply {
             textSize = 22f
@@ -593,14 +593,14 @@ class MainActivity : Activity() {
 
         // Details sheet over a dimmed screen.
         scrim = View(this).apply {
-            setBackgroundColor(0x99000000.toInt())
+            setBackgroundColor(0xB3000000.toInt())
             visibility = View.GONE
             setOnClickListener { hideDetails() }
         }
         root.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
         sheet = GlassPanel(this).apply {
             backdrop = this@MainActivity.backdrop
-            tint = 0xCC111520.toInt()
+            tint = 0xF00B0B0C.toInt()
             visibility = View.GONE
             isClickable = true
         }
