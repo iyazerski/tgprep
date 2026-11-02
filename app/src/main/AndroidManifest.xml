@@ -14,7 +14,7 @@
     <application
         android:icon="@drawable/ic_launcher"
         android:label="TG Prep"
-        android:theme="@android:style/Theme.DeviceDefault">
+        android:theme="@style/Theme.TgPrep">
 
         <activity
             android:name=".MainActivity"
