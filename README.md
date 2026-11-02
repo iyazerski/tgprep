@@ -6,8 +6,12 @@ that other people see are the ones this app produced.
 
 **Download the latest APK:** https://github.com/iyazerski/tgprep/releases/latest/download/tgprep.apk
 
-Flow: Gallery → Share → **TG Prep** → **Optimize for Telegram** → **Send to Telegram** → in Telegram,
-pick the top quality (1080p) → send.
+Flow: Gallery → Share → **TG Prep**. The app optimizes the video right away and opens Telegram's
+chat picker with the result. In Telegram, pick the top quality (1080p) → send.
+
+Opening TG Prep from the launcher shows the full screen instead: pick a video, optimize, send, save a
+copy to the gallery, and see the details. If optimizing fails, the app stays open with the error
+and a Retry button.
 
 ## Why HDR videos look wrong in Telegram
 
@@ -197,7 +201,8 @@ are wrong before the app ever sees them.
 
 1. Record a 10-20 s Dolby Vision clip with a sky, skin, a dark corner, and a bright light source.
    Hold the phone in portrait.
-2. Optimize it, then tap **Save copy to gallery** and **Send to Telegram**. In Telegram's quality
+2. Open TG Prep from the launcher, pick the clip, optimize it, then tap **Save copy to gallery**
+   and **Send to Telegram**. In Telegram's quality
    menu, pick the top option (1080p), then send it to *Saved Messages*.
 3. On a second device, or in Telegram Desktop, download the received video (Save to
    Downloads / Save as).

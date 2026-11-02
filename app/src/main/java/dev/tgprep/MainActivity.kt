@@ -27,7 +27,12 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.min
 
-/** Single screen: receive a video, optimize it with one tap, send the result to Telegram. */
+/**
+ * Single screen: receive a video, optimize it, send the result to Telegram.
+ *
+ * Opened from Share or "Open with", it runs everything at once and hands over to Telegram. Opened
+ * from the launcher, it shows the controls for picking, optimizing, sending, and saving.
+ */
 class MainActivity : Activity() {
 
     private lateinit var status: TextView
@@ -41,6 +46,8 @@ class MainActivity : Activity() {
     private var sourceInfo: SourceInfo? = null
     private var output: File? = null
     private var job: Optimizer? = null
+    /** True when the video came from Share/Open with: optimize and send without any taps. */
+    private var autoSend = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,6 +82,7 @@ class MainActivity : Activity() {
             Intent.ACTION_VIEW -> intent.data
             else -> null
         }
+        autoSend = uri != null
         if (uri != null) load(uri) else showIdle()
     }
 
@@ -108,6 +116,7 @@ class MainActivity : Activity() {
                     save.visibility = View.GONE
                     progress.visibility = View.GONE
                     pick.visibility = View.VISIBLE
+                    if (autoSend) optimize()
                 }.onFailure {
                     status.text = "Can't read this video"
                     details.text = it.toString()
@@ -148,6 +157,12 @@ class MainActivity : Activity() {
                 progress.visibility = View.GONE
                 result.onSuccess { report ->
                     output = out
+                    if (autoSend) {
+                        Toast.makeText(this, "In Telegram, pick ${min(plan.width, plan.height)}p (top quality) so it's sent as is", Toast.LENGTH_LONG).show()
+                        share(shareFile, direct = true)
+                        finish()
+                        return@runOnUiThread
+                    }
                     // Telegram's editor preselects at most its 3rd quality step (720p for videos above 1280 px),
                     // and only its top step sends the file untouched.
                     status.text = "Done. In Telegram, tap the quality button\nand pick ${min(plan.width, plan.height)}p (top) so it's sent as is."
