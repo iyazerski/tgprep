@@ -117,7 +117,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
                 width = f.getInteger(MediaFormat.KEY_WIDTH),
                 height = f.getInteger(MediaFormat.KEY_HEIGHT),
                 rotation = f.intOrNull(MediaFormat.KEY_ROTATION) ?: mmrRotation ?: 0,
-                fps = f.numberOrNull(MediaFormat.KEY_FRAME_RATE) ?: estimateFps(extractor, v),
+                fps = f.numberOrNull(MediaFormat.KEY_FRAME_RATE)?.takeIf { it > 1f } ?: estimateFps(extractor, v),
                 durationUs = f.longOrNull(MediaFormat.KEY_DURATION) ?: 0,
                 bitrate = f.intOrNull(MediaFormat.KEY_BIT_RATE) ?: mmrBitrate ?: 0,
                 transfer = transferOf(f.intOrNull(MediaFormat.KEY_COLOR_TRANSFER)) ?: dv?.second?.let(::transferOfDvCompat),
@@ -199,8 +199,8 @@ class Optimizer(private val context: Context, private val source: Uri) {
         skip: Set<String>,
     ): String {
         val started = System.currentTimeMillis()
-        val extractor = MediaExtractor().also(::openSource)
-        val audioExtractor = MediaExtractor().also(::openSource)
+        var extractor: MediaExtractor? = null
+        var audioExtractor: MediaExtractor? = null
         var encoder: MediaCodec? = null
         var decoder: MediaCodec? = null
         var egl: EglCore? = null
@@ -211,11 +211,13 @@ class Optimizer(private val context: Context, private val source: Uri) {
         var ok = false
         var frames = 0
         try {
-            val videoTrack = findTrack(extractor, "video/")!!
-            extractor.selectTrack(videoTrack)
-            val audioTrack = findTrack(audioExtractor, "audio/")
-            audioTrack?.let { audioExtractor.selectTrack(it) }
-            val audioFormat = audioTrack?.let { audioExtractor.getTrackFormat(it) }
+            val videoExtractor = MediaExtractor().also(::openSource).also { extractor = it }
+            val audioSource = MediaExtractor().also(::openSource).also { audioExtractor = it }
+            val videoTrack = findTrack(videoExtractor, "video/")!!
+            videoExtractor.selectTrack(videoTrack)
+            val audioTrack = findTrack(audioSource, "audio/")
+            audioTrack?.let { audioSource.selectTrack(it) }
+            val audioFormat = audioTrack?.let { audioSource.getTrackFormat(it) }
 
             val (enc, encoderName) = createEncoder(plan)
             encoder = enc
@@ -223,7 +225,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
             enc.start()
             yuv = YuvTextures()
 
-            val decoderFormat = extractor.getTrackFormat(videoTrack)
+            val decoderFormat = videoExtractor.getTrackFormat(videoTrack)
             val (dec, decoderNote) = createDecoder(decoderFormat, info, skip)
             decoder = dec
             dec.start()
@@ -246,20 +248,22 @@ class Optimizer(private val context: Context, private val source: Uri) {
 
             fun copyAudioUpTo(limitUs: Long) {
                 while (!audioDone) {
-                    if (audioExtractor.sampleTrackIndex < 0) { audioDone = true; return }
-                    val t = audioExtractor.sampleTime
+                    if (audioSource.sampleTrackIndex < 0) { audioDone = true; return }
+                    val t = audioSource.sampleTime
                     if (t > limitUs) return
                     if (t < 0) {
                         // Encoder priming samples before t=0 (edit-list offset); players skip them anyway.
-                        audioExtractor.advance()
+                        audioSource.advance()
                         continue
                     }
-                    audioInfo.size = audioExtractor.readSampleData(audioBuffer, 0)
+                    val size = audioSource.readSampleData(audioBuffer, 0)
+                    if (size < 0) { audioDone = true; return }
+                    audioInfo.size = size
                     audioInfo.offset = 0
                     audioInfo.presentationTimeUs = t
-                    audioInfo.flags = if (audioExtractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                    audioInfo.flags = if (audioSource.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                     muxer.writeSampleData(muxAudio, audioBuffer, audioInfo)
-                    audioExtractor.advance()
+                    audioSource.advance()
                 }
             }
 
@@ -275,18 +279,21 @@ class Optimizer(private val context: Context, private val source: Uri) {
 
             while (!encoderDone) {
                 if (cancelled) error("Cancelled")
+                var progressed = false
 
+                // Poll decoder input non-blocking so a full input queue never stalls encoder/output draining.
                 if (!inputDone) {
-                    val idx = dec.dequeueInputBuffer(TIMEOUT_US)
+                    val idx = dec.dequeueInputBuffer(0)
                     if (idx >= 0) {
+                        progressed = true
                         val buf = dec.getInputBuffer(idx)!!
-                        val size = extractor.readSampleData(buf, 0)
+                        val size = videoExtractor.readSampleData(buf, 0)
                         if (size < 0) {
                             dec.queueInputBuffer(idx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
-                            dec.queueInputBuffer(idx, 0, size, extractor.sampleTime, 0)
-                            extractor.advance()
+                            dec.queueInputBuffer(idx, 0, size, videoExtractor.sampleTime, 0)
+                            videoExtractor.advance()
                             sourceSamples++
                         }
                     }
@@ -294,20 +301,23 @@ class Optimizer(private val context: Context, private val source: Uri) {
 
                 // Drain the encoder.
                 while (true) {
-                    val idx = enc.dequeueOutputBuffer(encInfo, if (decoderDone) TIMEOUT_US else 0)
+                    val idx = enc.dequeueOutputBuffer(encInfo, if (decoderDone && !progressed) TIMEOUT_US else 0)
                     if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) break
+                    progressed = true
                     if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        muxVideo = muxer.addTrack(enc.outputFormat)
-                        producedProfile = enc.outputFormat.getByteBuffer("csd-0")?.let(::avcProfileName) ?: "?"
-                        if (audioFormat != null) {
-                            muxAudio = try {
-                                muxer.addTrack(audioFormat)
-                            } catch (e: Exception) {
-                                throw IllegalStateException("Audio codec ${audioFormat.getString(MediaFormat.KEY_MIME)} can't be copied into MP4", e)
+                        if (!muxerStarted) {
+                            muxVideo = muxer.addTrack(enc.outputFormat)
+                            producedProfile = enc.outputFormat.getByteBuffer("csd-0")?.let(::avcProfileName) ?: "?"
+                            if (audioFormat != null) {
+                                muxAudio = try {
+                                    muxer.addTrack(audioFormat)
+                                } catch (e: Exception) {
+                                    throw IllegalStateException("Audio codec ${audioFormat.getString(MediaFormat.KEY_MIME)} can't be copied into MP4", e)
+                                }
                             }
+                            muxer.start()
+                            muxerStarted = true
                         }
-                        muxer.start()
-                        muxerStarted = true
                         continue
                     }
                     if (idx < 0) continue
@@ -329,8 +339,9 @@ class Optimizer(private val context: Context, private val source: Uri) {
                     }
                 }
 
+                // Only block here when neither input nor encoder made progress this pass.
                 if (!decoderDone) {
-                    val idx = dec.dequeueOutputBuffer(decInfo, TIMEOUT_US)
+                    val idx = dec.dequeueOutputBuffer(decInfo, if (progressed) 0 else TIMEOUT_US)
                     if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         decoderOutFormat = dec.outputFormat
                     } else if (idx >= 0) {
@@ -363,6 +374,8 @@ class Optimizer(private val context: Context, private val source: Uri) {
                         }
                         dec.releaseOutputBuffer(idx, false)
                         if (eos) {
+                            // Fail before signaling EOS to an encoder that never received a frame.
+                            check(frames > 0) { "No frames decoded" }
                             enc.signalEndOfInputStream()
                             decoderDone = true
                         }
@@ -402,8 +415,8 @@ class Optimizer(private val context: Context, private val source: Uri) {
             runCatching { egl?.release() }
             if (muxerStarted) runCatching { muxer?.stop() }
             runCatching { muxer?.release() }
-            extractor.release()
-            audioExtractor.release()
+            runCatching { extractor?.release() }
+            runCatching { audioExtractor?.release() }
             if (!ok) output.delete()
         }
     }

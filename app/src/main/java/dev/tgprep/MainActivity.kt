@@ -251,7 +251,7 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val plan = optimizer.plan(info)
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.Default) {
+            val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val report = optimizer.run(info, plan, out, keepLocation = needsFullCopy) { progress = it }
                     if (needsFullCopy) Mp4Meta.copyWithoutLocation(out, shareFile)
