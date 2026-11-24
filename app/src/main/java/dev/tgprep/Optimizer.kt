@@ -154,14 +154,20 @@ class Optimizer(private val context: Context, private val source: Uri) {
     }
 
     /** Transcode [source] into [output]. Returns a human-readable report. */
-    fun run(info: SourceInfo, plan: Plan, output: File, onProgress: (Float) -> Unit): String {
+    fun run(
+        info: SourceInfo,
+        plan: Plan,
+        output: File,
+        keepLocation: Boolean = true,
+        onProgress: (Float) -> Unit,
+    ): String {
         // Some decoders accept the configuration but fail on the first samples (e.g. 10-bit HEVC on
         // weak decoders). Retry with the next candidate when nothing has been produced yet.
         val skip = mutableSetOf<String>()
         var firstFailure: Throwable? = null
         while (true) {
             try {
-                val report = attempt(info, plan, output, onProgress, skip)
+                val report = attempt(info, plan, output, keepLocation, onProgress, skip)
                 info.createdMs?.let { Mp4Meta.setCreationTime(output, it) }
                 return report
             } catch (e: DecoderStartFailure) {
@@ -184,7 +190,14 @@ class Optimizer(private val context: Context, private val source: Uri) {
     private class DecoderStartFailure(val decoder: String, cause: Throwable) : Exception(cause)
     private class NoDecoderLeft(mime: String, cause: Throwable?) : Exception("No decoder for $mime", cause)
 
-    private fun attempt(info: SourceInfo, plan: Plan, output: File, onProgress: (Float) -> Unit, skip: Set<String>): String {
+    private fun attempt(
+        info: SourceInfo,
+        plan: Plan,
+        output: File,
+        keepLocation: Boolean,
+        onProgress: (Float) -> Unit,
+        skip: Set<String>,
+    ): String {
         val started = System.currentTimeMillis()
         val extractor = MediaExtractor().also(::openSource)
         val audioExtractor = MediaExtractor().also(::openSource)
@@ -216,7 +229,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
             dec.start()
 
             muxer = MediaMuxer(output.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            info.location?.let { (lat, lon) -> muxer.setLocation(lat, lon) }
+            if (keepLocation) info.location?.let { (lat, lon) -> muxer.setLocation(lat, lon) }
             var muxVideo = -1
             var producedProfile = "?"
             var encodedFrames = 0

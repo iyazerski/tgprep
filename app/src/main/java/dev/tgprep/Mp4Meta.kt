@@ -20,7 +20,7 @@ object Mp4Meta {
     fun setCreationTime(file: File, epochMs: Long) {
         val mp4Time = epochMs / 1000 + MP4_EPOCH_OFFSET_S
         RandomAccessFile(file, "rw").use { f ->
-            walk(f, 0, f.length()) { type, _, payload ->
+            walk(f, 0, f.length()) { type, _, payload, _ ->
                 if (type in TIME_BOXES) {
                     f.seek(payload)
                     // Full box: 1 byte version, 3 bytes flags, then creation and modification time.
@@ -34,21 +34,39 @@ object Mp4Meta {
         }
     }
 
-    /** Copy [source] to [target] with the location box turned into a 'free' box (same size, so offsets stay valid). */
+    /**
+     * Copy [source] to [target] with the location box turned into a zeroed 'free' box
+     * (same size, so chunk offsets stay valid, and no coordinate bytes remain).
+     */
     fun copyWithoutLocation(source: File, target: File) {
-        source.copyTo(target, overwrite = true)
-        RandomAccessFile(target, "rw").use { f ->
-            walk(f, 0, f.length()) { type, box, _ ->
-                if (type == LOCATION_BOX) {
-                    f.seek(box + 4)
-                    f.write("free".toByteArray(Charsets.US_ASCII))
+        try {
+            source.copyTo(target, overwrite = true)
+            RandomAccessFile(target, "rw").use { f ->
+                walk(f, 0, f.length()) { type, box, payload, boxEnd ->
+                    if (type == LOCATION_BOX) {
+                        f.seek(box + 4)
+                        f.write("free".toByteArray(Charsets.US_ASCII))
+                        var remaining = boxEnd - payload
+                        if (remaining > 0) {
+                            f.seek(payload)
+                            val zeros = ByteArray(minOf(remaining, 4096L).toInt())
+                            while (remaining > 0) {
+                                val n = minOf(remaining, zeros.size.toLong()).toInt()
+                                f.write(zeros, 0, n)
+                                remaining -= n
+                            }
+                        }
+                    }
                 }
             }
+        } catch (e: Throwable) {
+            target.delete()
+            throw e
         }
     }
 
-    /** Visit every box in [start, end), descending into known containers. Calls [visit] with the type, box offset, and payload offset. */
-    private fun walk(f: RandomAccessFile, start: Long, end: Long, visit: (String, Long, Long) -> Unit) {
+    /** Visit every box in [start, end), descending into known containers. Calls [visit] with type, box offset, payload offset, and box end. */
+    private fun walk(f: RandomAccessFile, start: Long, end: Long, visit: (String, Long, Long, Long) -> Unit) {
         var pos = start
         while (pos + 8 <= end) {
             f.seek(pos)
@@ -61,7 +79,7 @@ object Mp4Meta {
                 0L -> size = end - pos
             }
             if (size < header || pos + size > end) return
-            visit(type, pos, pos + header)
+            visit(type, pos, pos + header, pos + size)
             if (type in CONTAINERS) walk(f, pos + header, pos + size, visit)
             pos += size
         }

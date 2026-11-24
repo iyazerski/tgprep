@@ -116,8 +116,9 @@ app makes 1080p and you pick 1080p by hand.
     dialog: **Allow all** grants only media location (the app still can't browse your library).
     If you deny it, everything works except the location.
   - **Privacy:** Telegram uploads the file untouched, so a location inside it would reach every
-    chat member. The copy sent to Telegram has the location box renamed to `free`. That's
-    4 bytes, and the video stream stays identical. Only the gallery copy keeps the location.
+    chat member. In the Share flow, location isn't written at all; in the launcher flow, the copy
+    sent to Telegram has the location box turned into a zeroed `free` box so no coordinate bytes
+    remain, while the gallery copy keeps the location.
 
 The detail panel shows what really happened: which decoder ran, the color signal it reported,
 the encoder, the encoded frame count, and the H.264 profile it actually produced (read from the SPS).

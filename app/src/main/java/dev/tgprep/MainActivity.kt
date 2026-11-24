@@ -231,10 +231,11 @@ class MainActivity : ComponentActivity() {
         if (job != null) return
         OutputProvider.clear(this)
         val base = sourceBaseName(uri) ?: "TgPrep_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}"
-        // The full file keeps the location for the gallery copy. Telegram uploads files untouched, so the
-        // copy that gets sent has the location removed to avoid sharing GPS with the chat.
-        val out = File(OutputProvider.outputDir(this), "${base}_TG.full.mp4")
+        // Only write a separate full file with location when the user can save a gallery copy and the
+        // source has GPS. Telegram uploads files untouched, so the shared file must never carry GPS.
+        val needsFullCopy = !autoSend && info.location != null
         val shareFile = File(OutputProvider.outputDir(this), "${base}_TG.mp4")
+        val out = if (needsFullCopy) File(OutputProvider.outputDir(this), "${base}_TG.full.mp4") else shareFile
         val optimizer = Optimizer(this, uri)
         job = optimizer
         progress = 0f
@@ -244,8 +245,8 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.Default) {
                 runCatching {
-                    val report = optimizer.run(info, plan, out) { progress = it }
-                    Mp4Meta.copyWithoutLocation(out, shareFile)
+                    val report = optimizer.run(info, plan, out, keepLocation = needsFullCopy) { progress = it }
+                    if (needsFullCopy) Mp4Meta.copyWithoutLocation(out, shareFile)
                     report
                 }
             }
@@ -303,7 +304,8 @@ class MainActivity : ComponentActivity() {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, file.name.removeSuffix(".full.mp4") + ".mp4")
+                        val displayName = if (file.name.endsWith(".full.mp4")) file.name.removeSuffix(".full.mp4") + ".mp4" else file.name
+                        put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
                         put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                         // The camera folder, so the copy shows up in Photos next to the original.
                         put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/Camera")
