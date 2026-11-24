@@ -1,302 +1,93 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package dev.tgprep
 
-import android.content.Context
-import android.graphics.Canvas
-import android.graphics.LinearGradient
-import android.graphics.Matrix
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RadialGradient
-import android.graphics.RectF
-import android.graphics.RenderEffect
-import android.graphics.RenderNode
-import android.graphics.Shader
-import android.graphics.Typeface
-import android.os.SystemClock
-import android.util.AttributeSet
-import android.view.Gravity
-import android.view.View
-import android.view.animation.OvershootInterpolator
-import android.view.animation.PathInterpolator
-import android.widget.Button
-import android.widget.FrameLayout
-import android.widget.TextView
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.sin
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.toPath
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.center
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Matrix
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.graphics.shapes.Morph
+import androidx.graphics.shapes.RoundedPolygon
 
-/** Colors, type, and motion shared by the UI: monochrome, in shades of black. */
-object Style {
-    const val BACKGROUND = 0xFF000000.toInt()
-    /** Solid graphite for opaque elements such as the main button. */
-    const val GRAPHITE = 0xFF3A3A3D.toInt()
-    const val TEXT = 0xFFF5F5F7.toInt()
-    const val TEXT_DIM = 0x99F5F5F7.toInt()
-    /** Fast start, long soft landing: used for state changes. */
-    val EASE = PathInterpolator(0.2f, 0.9f, 0.1f, 1f)
-    val SEMIBOLD: Typeface = Typeface.create(Typeface.DEFAULT, 600, false)
-    val BOLD: Typeface = Typeface.create(Typeface.DEFAULT, 700, false)
+/** Material 3 Expressive in the wallpaper's colors, light or dark as the system is. */
+@Composable
+fun TgPrepTheme(content: @Composable () -> Unit) {
+    val context = LocalContext.current
+    val dark = isSystemInDarkTheme()
+    val scheme = remember(context, dark) {
+        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    }
+    MaterialExpressiveTheme(colorScheme = scheme, content = content)
 }
 
-fun Context.dp(value: Float): Float = value * resources.displayMetrics.density
-
-fun Context.dpi(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
-
-/** Black background with faint graphite light that drifts slowly. Glass panels show it blurred through them. */
-class Backdrop @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
-    private class Blob(val color: Int, val x: Float, val y: Float, val size: Float, val speed: Float, val phase: Float) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        val matrix = Matrix()
-        var radius = 0f
+/** A [color] filled [shape] behind [content] that morphs with a spring when [shape] changes. */
+@Composable
+fun MorphingShape(
+    shape: RoundedPolygon,
+    color: Color,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    var from by remember { mutableStateOf(shape) }
+    var to by remember { mutableStateOf(shape) }
+    val progress = remember { Animatable(1f) }
+    val spec = MaterialTheme.motionScheme.slowSpatialSpec<Float>()
+    LaunchedEffect(shape) {
+        if (shape == to) return@LaunchedEffect
+        from = to
+        to = shape
+        progress.snapTo(0f)
+        progress.animateTo(1f, spec)
     }
-
-    private val blobs = listOf(
-        Blob(0xFF5A5A60.toInt(), 0.12f, 0.16f, 0.70f, 0.21f, 0f),
-        Blob(0xFF3A3A3F.toInt(), 0.95f, 0.38f, 0.65f, 0.16f, 2.1f),
-        Blob(0xFF4A4A50.toInt(), 0.20f, 0.80f, 0.60f, 0.19f, 4.2f),
-        Blob(0xFF2E2E33.toInt(), 0.90f, 0.96f, 0.55f, 0.25f, 1.3f),
+    val morph = remember(from, to) { Morph(from, to) }
+    Box(
+        modifier.drawWithCache {
+            val path = Path()
+            val scale = Matrix().apply { scale(size.width, size.height) }
+            onDrawBehind {
+                path.rewind()
+                // The spring overshoots, and a morph past its ends turns inside out.
+                morph.toPath(progress.value.coerceIn(0f, 1f), path)
+                path.transform(scale)
+                path.translate(size.center - path.getBounds().center)
+                drawPath(path, color)
+            }
+        },
+        contentAlignment = Alignment.Center,
+        content = content,
     )
-    private val started = SystemClock.uptimeMillis()
-
-    /** Glass panels that show this backdrop and must redraw with each frame. */
-    val panels = mutableSetOf<View>()
-
-    /** Animation time in seconds. */
-    val seconds: Float get() = (SystemClock.uptimeMillis() - started) / 1000f
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        val extent = max(w, h).toFloat()
-        for (b in blobs) {
-            b.radius = b.size * extent
-            val rgb = b.color and 0xFFFFFF
-            b.paint.shader = RadialGradient(
-                0f, 0f, b.radius,
-                intArrayOf(rgb or 0x80000000.toInt(), rgb or 0x2E000000, rgb),
-                floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP,
-            )
-        }
-    }
-
-    /** Draw the scene at time [t] (seconds) in this view's coordinates. */
-    fun drawScene(canvas: Canvas, t: Float) {
-        canvas.drawColor(Style.BACKGROUND)
-        for (b in blobs) {
-            val x = width * (b.x + 0.16f * sin(t * b.speed + b.phase))
-            val y = height * (b.y + 0.09f * cos(t * b.speed * 1.3f + b.phase))
-            b.matrix.setTranslate(x, y)
-            b.paint.shader?.setLocalMatrix(b.matrix)
-            canvas.drawCircle(x, y, b.radius, b.paint)
-        }
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        drawScene(canvas, seconds)
-        panels.forEach { it.invalidate() }
-        postInvalidateOnAnimation()
-    }
 }
 
-/**
- * Smoked glass panel: shows the [backdrop] behind it blurred, under a dark translucent tint, a soft
- * top highlight, and a thin silver edge.
- */
-open class GlassPanel @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : FrameLayout(context, attrs) {
-    var backdrop: Backdrop? = null
-        set(value) {
-            field?.panels?.remove(this)
-            field = value
-            value?.panels?.add(this)
-        }
-    var cornerRadius = context.dp(28f)
-        set(value) {
-            field = value
-            updateShape()
-        }
-    /** Fill drawn over the blurred backdrop. */
-    var tint = 0x0FFFFFFF
-        set(value) {
-            field = value
-            invalidate()
-        }
-
-    private val node = RenderNode("glass").apply {
-        setRenderEffect(RenderEffect.createBlurEffect(context.dp(36f), context.dp(36f), Shader.TileMode.CLAMP))
-    }
-    private val path = Path()
-    private val edgeRect = RectF()
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val highlight = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = context.dp(1f)
-    }
-    private val location = IntArray(2)
-    private val backdropLocation = IntArray(2)
-
-    init {
-        setWillNotDraw(false)
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        updateShape()
-    }
-
-    private fun updateShape() {
-        val w = width.toFloat()
-        val h = height.toFloat()
-        val r = min(cornerRadius, h / 2)
-        path.reset()
-        path.addRoundRect(0f, 0f, w, h, r, r, Path.Direction.CW)
-        val half = edge.strokeWidth / 2
-        edgeRect.set(half, half, w - half, h - half)
-        highlight.shader = LinearGradient(0f, 0f, 0f, max(1f, min(h, context.dp(90f))), 0x14FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
-        edge.shader = LinearGradient(
-            0f, 0f, w, h,
-            intArrayOf(0x66FFFFFF, 0x0FFFFFFF, 0x0FFFFFFF, 0x33FFFFFF),
-            floatArrayOf(0f, 0.35f, 0.7f, 1f), Shader.TileMode.CLAMP,
-        )
-        invalidate()
-    }
-
-    override fun draw(canvas: Canvas) {
-        val b = backdrop
-        if (b != null && canvas.isHardwareAccelerated && width > 0 && height > 0) {
-            getLocationInWindow(location)
-            b.getLocationInWindow(backdropLocation)
-            node.setPosition(0, 0, width, height)
-            val recording = node.beginRecording(width, height)
-            // Undo the scale of press animations so the blurred scene stays aligned with the backdrop.
-            recording.scale(1 / scaleX, 1 / scaleY, width / 2f, height / 2f)
-            recording.translate((backdropLocation[0] - location[0]).toFloat(), (backdropLocation[1] - location[1]).toFloat())
-            b.drawScene(recording, b.seconds)
-            node.endRecording()
-            canvas.save()
-            canvas.clipPath(path)
-            canvas.drawRenderNode(node)
-            canvas.restore()
-        }
-        fill.color = tint
-        canvas.drawPath(path, fill)
-        canvas.drawPath(path, highlight)
-        val r = min(cornerRadius, height / 2f) - edge.strokeWidth / 2
-        canvas.drawRoundRect(edgeRect, r, r, edge)
-        super.draw(canvas)
-    }
-
-    override fun onDetachedFromWindow() {
-        super.onDetachedFromWindow()
-        node.discardDisplayList()
-    }
-}
-
-/** Glass pill button that sinks in when pressed and springs back on release. */
-class GlassButton @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : GlassPanel(context, attrs) {
-    private val label = TextView(context).apply {
-        setTextColor(Style.TEXT)
-        textSize = 17f
-        typeface = Style.SEMIBOLD
-        gravity = Gravity.CENTER
-        isDuplicateParentStateEnabled = true
-    }
-
-    var text: CharSequence
-        get() = label.text
-        set(value) {
-            label.text = value
-        }
-
-    /** Accent buttons are solid graphite; others are smoked glass. */
-    var accent = false
-        set(value) {
-            field = value
-            tint = if (value) Style.GRAPHITE else 0x59000000
-        }
-
-    init {
-        cornerRadius = context.dp(28f)
-        tint = 0x59000000
-        isClickable = true
-        isFocusable = true
-        minimumHeight = context.dpi(56)
-        addView(label, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
-    }
-
-    override fun setPressed(pressed: Boolean) {
-        val changed = pressed != isPressed
-        super.setPressed(pressed)
-        if (!changed) return
-        animate()
-            .scaleX(if (pressed) 0.95f else 1f)
-            .scaleY(if (pressed) 0.95f else 1f)
-            .setInterpolator(if (pressed) Style.EASE else OvershootInterpolator(3f))
-            .setDuration(if (pressed) 140 else 420)
-            .start()
-    }
-
-    override fun setEnabled(enabled: Boolean) {
-        super.setEnabled(enabled)
-        animate().alpha(if (enabled) 1f else 0.45f).setDuration(200).start()
-    }
-
-    override fun getAccessibilityClassName(): CharSequence = Button::class.java.name
-}
-
-/** Glossy progress bar: smooth fill with a moving sheen, or a sweeping segment while indeterminate. */
-class GlassProgress @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
-    private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x1AFFFFFF }
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val sheen = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val sheenMatrix = Matrix()
-    private val rect = RectF()
-    private val started = SystemClock.uptimeMillis()
-    private var shown = 0f
-    private var target = 0f
-    private var indeterminate = true
-
-    /** Show progress [fraction] (0..1); the bar glides to it. */
-    fun setProgress(fraction: Float) {
-        target = fraction.coerceIn(0f, 1f)
-        indeterminate = false
-        invalidate()
-    }
-
-    /** Show an indeterminate sweep until the next [setProgress]. */
-    fun reset() {
-        indeterminate = true
-        shown = 0f
-        target = 0f
-        invalidate()
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        fill.shader = LinearGradient(0f, 0f, w.toFloat(), 0f, 0xFF8E8E93.toInt(), 0xFFF5F5F7.toInt(), Shader.TileMode.CLAMP)
-        val band = max(1f, w * 0.35f)
-        sheen.shader = LinearGradient(0f, 0f, band, 0f, intArrayOf(0x00FFFFFF, 0x66FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        val w = width.toFloat()
-        val h = height.toFloat()
-        val r = h / 2
-        rect.set(0f, 0f, w, h)
-        canvas.drawRoundRect(rect, r, r, track)
-        val t = (SystemClock.uptimeMillis() - started) / 1000f
-        if (indeterminate) {
-            val seg = w * 0.3f
-            val x = (w + seg) * ((t * 0.6f) % 1f) - seg
-            rect.set(max(0f, x), 0f, min(w, x + seg), h)
-        } else {
-            shown += (target - shown) * 0.12f
-            rect.set(0f, 0f, max(h, w * shown), h)
-        }
-        if (rect.width() > 0) {
-            canvas.drawRoundRect(rect, r, r, fill)
-            sheenMatrix.setTranslate((w * 1.6f) * ((t * 0.45f) % 1f) - w * 0.4f, 0f)
-            sheen.shader?.setLocalMatrix(sheenMatrix)
-            canvas.drawRoundRect(rect, r, r, sheen)
-        }
-        if (isShown) postInvalidateOnAnimation()
-    }
+/** A Material Symbols icon from the drawables. */
+@Composable
+fun Symbol(
+    icon: Int,
+    modifier: Modifier = Modifier,
+    tint: Color = LocalContentColor.current,
+    description: String? = null,
+) {
+    Icon(painterResource(icon), contentDescription = description, modifier = modifier, tint = tint)
 }
