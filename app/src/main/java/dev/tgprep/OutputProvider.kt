@@ -11,11 +11,7 @@ import android.provider.OpenableColumns
 import java.io.File
 import java.io.FileNotFoundException
 
-/**
- * Read-only provider that exposes finished videos from [outputDir] to the share target.
- *
- * A framework-only replacement for AndroidX FileProvider, so the app has no dependencies.
- */
+/** Read-only provider that exposes finished videos from [outputDir] to the share target. */
 class OutputProvider : ContentProvider() {
 
     override fun onCreate(): Boolean = true
@@ -54,12 +50,18 @@ class OutputProvider : ContentProvider() {
 
     companion object {
         private const val AUTHORITY = "dev.tgprep.out"
+        private const val MAX_AGE_MS = 15 * 60_000L
+        private const val MAX_KEPT_FILES = 4
 
         fun outputDir(context: Context): File = File(context.cacheDir, "out").apply { mkdirs() }
 
-        /** Delete previous results; only the latest output is kept. */
-        fun clear(context: Context) {
-            outputDir(context).listFiles()?.forEach { it.delete() }
+        /** Delete stale results, keeping recent ones briefly in case a share target is still reading them. */
+        fun prune(context: Context, keep: Set<File> = emptySet()) {
+            val cutoff = System.currentTimeMillis() - MAX_AGE_MS
+            val files = outputDir(context).listFiles()?.sortedByDescending { it.lastModified() } ?: return
+            files.forEachIndexed { i, file ->
+                if (file !in keep && (i >= MAX_KEPT_FILES || file.lastModified() < cutoff)) file.delete()
+            }
         }
 
         fun uriFor(file: File): Uri = Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(file.name).build()
