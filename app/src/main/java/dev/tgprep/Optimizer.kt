@@ -383,6 +383,7 @@ class Optimizer(private val context: Context, private val source: Uri) {
                 }
             }
             check(frames > 0) { "No frames decoded" }
+            renderer?.checkError()
             copyAudioUpTo(Long.MAX_VALUE)
             muxer.stop()
             muxerStarted = false

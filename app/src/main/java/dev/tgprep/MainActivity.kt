@@ -195,10 +195,12 @@ class MainActivity : ComponentActivity() {
     private fun load(uri: Uri, autoSend: Boolean) {
         // The picker can still open from buttons that are fading out as optimizing starts.
         if (stage is Stage.Optimizing) return
-        // Without ACCESS_MEDIA_LOCATION, MediaProvider strips the GPS from the shared file. Ask once;
-        // continue either way.
+        pendingLoad = null
+        // Without ACCESS_MEDIA_LOCATION, MediaProvider strips the GPS from the video. Only the
+        // launcher flow can save a gallery copy with GPS; Share never writes location.
         val prefs = getPreferences(MODE_PRIVATE)
-        if (checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+        if (!autoSend &&
+            checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             !prefs.getBoolean(PREF_ASKED_LOCATION, false)
         ) {
             prefs.edit { putBoolean(PREF_ASKED_LOCATION, true) }
@@ -218,7 +220,7 @@ class MainActivity : ComponentActivity() {
             }
             val size = withContext(Dispatchers.IO) { querySize(uri) }
             // Another video came in, or the app returned to Idle, while this one was read.
-            if (stage != opening) return@launch
+            if (stage !== opening) return@launch
             thumbnail = preview?.asImageBitmap()
             result.onSuccess { info ->
                 val video = LoadedVideo(uri, info, size, autoSend)
@@ -275,7 +277,9 @@ class MainActivity : ComponentActivity() {
                 if (autoSend) {
                     Toast.makeText(this@MainActivity, hint, Toast.LENGTH_LONG).show()
                     share(shareFile, direct = true)
-                    finishAndRemoveTask()
+                    // Use finish(), not finishAndRemoveTask(): a share chooser opens in our task and
+                    // removing the task would close it. Recents replay is blocked by LAUNCHED_FROM_HISTORY.
+                    finish()
                     return@launch
                 }
                 window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
@@ -342,8 +346,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            // The user may have moved on to another video while this one was copied.
-            if ((stage as? Stage.Done)?.fullFile != file) return@launch
+            // The user may have moved on to another video (or re-run this one) while it was copied.
+            if (stage !== done) return@launch
             if (result.isSuccess) {
                 saving = Saving.Done
                 window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)

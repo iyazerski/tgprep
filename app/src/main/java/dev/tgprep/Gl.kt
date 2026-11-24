@@ -255,10 +255,14 @@ class Renderer(
         GLES30.glEnableVertexAttribArray(aTex)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         if (!checkedDraw) {
-            val err = GLES30.glGetError()
-            check(err == GLES30.GL_NO_ERROR) { "GL error 0x${Integer.toHexString(err)}" }
+            checkError()
             checkedDraw = true
         }
+    }
+
+    fun checkError() {
+        val err = GLES30.glGetError()
+        check(err == GLES30.GL_NO_ERROR) { "GL error 0x${Integer.toHexString(err)}" }
     }
 
     fun release() = GLES30.glDeleteProgram(program)

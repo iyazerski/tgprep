@@ -112,9 +112,10 @@ app makes 1080p and you pick 1080p by hand.
   - MediaMuxer always stamps "now" as the creation time, so `Mp4Meta` rewrites the
     `mvhd`/`tkhd`/`mdhd` times in place after muxing. MediaMuxer can set the location itself.
   - Android removes the GPS from shared videos unless the app holds `ACCESS_MEDIA_LOCATION`. The
-    app asks for it once, on the first video. On Android 16 this shows the "photos and videos"
-    dialog: **Allow all** grants only media location (the app still can't browse your library).
-    If you deny it, everything works except the location.
+    app asks for it once, on the first video picked in the launcher flow (the Share flow never
+    writes location). On Android 16 this shows the "photos and videos" dialog: **Allow all** grants
+    only media location (the app still can't browse your library). If you deny it, everything works
+    except the location.
   - **Privacy:** Telegram uploads the file untouched, so a location inside it would reach every
     chat member. In the Share flow, location isn't written at all; in the launcher flow, the copy
     sent to Telegram has the location box turned into a zeroed `free` box so no coordinate bytes
@@ -170,7 +171,8 @@ before switching between the two.
    Without adb: open the download link above in the phone's browser, open the downloaded file,
    and allow "Install unknown apps" for the browser. ColorOS may run an extra security scan, which you can let pass.
 3. In the camera, record with Dolby Vision on. In Photos, open the clip → Share → **TG Prep**.
-   On the first video, the app asks for media access: pick **Allow all** to keep the location.
+   If you also open TG Prep from the launcher to save gallery copies, pick **Allow all** on the
+   one-time media access prompt to keep GPS location in those copies.
 
 ## Tests
 
