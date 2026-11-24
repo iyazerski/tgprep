@@ -1,45 +1,130 @@
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+
 package dev.tgprep
 
 import android.Manifest
-import android.app.Activity
 import android.content.ClipData
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.Outline
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
-import android.transition.AutoTransition
-import android.transition.TransitionManager
 import android.util.Size
-import android.view.Gravity
 import android.view.HapticFeedbackConstants
-import android.view.View
-import android.view.ViewGroup
-import android.view.ViewOutlineProvider
-import android.view.WindowInsets
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
-import android.window.OnBackInvokedCallback
-import android.window.OnBackInvokedDispatcher
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroup
+import androidx.compose.material3.ContainedLoadingIndicator
+import androidx.compose.material3.DropdownMenuGroup
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenuPopup
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeFlexibleTopAppBar
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuDefaults
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ProgressIndicatorDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SplitButtonDefaults
+import androidx.compose.material3.SplitButtonLayout
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.contentColorFor
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.core.content.edit
+import androidx.core.net.toUri
+import androidx.graphics.shapes.RoundedPolygon
+import androidx.lifecycle.lifecycleScope
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Single screen: receive a video, optimize it, send the result to Telegram.
@@ -48,47 +133,36 @@ import kotlin.math.roundToInt
  * from the launcher, it shows the controls for picking, optimizing, sending, and saving. Technical
  * details about the files are kept in a sheet behind the info button.
  */
-class MainActivity : Activity() {
-
-    private lateinit var backdrop: Backdrop
-    private lateinit var content: LinearLayout
-    private lateinit var card: GlassPanel
-    private lateinit var thumb: ImageView
-    private lateinit var icon: ImageView
-    private lateinit var title: TextView
-    private lateinit var subtitle: TextView
-    private lateinit var chips: LinearLayout
-    private lateinit var progress: GlassProgress
-    private lateinit var primary: GlassButton
-    private lateinit var secondaryRow: LinearLayout
-    private lateinit var save: GlassButton
-    private lateinit var pick: GlassButton
-    private lateinit var update: GlassButton
-    private lateinit var info: GlassButton
-    private lateinit var scrim: View
-    private lateinit var sheet: GlassPanel
-    private lateinit var detailsText: TextView
-    private lateinit var detailsScroll: ScrollView
+class MainActivity : ComponentActivity() {
+    private val snackbar = SnackbarHostState()
+    private var stage by mutableStateOf<Stage>(Stage.Idle)
+    /** How much of the running optimization is done, 0 to 1. The optimizer's thread writes it. */
+    private var progress by mutableFloatStateOf(0f)
+    private var thumbnail by mutableStateOf<ImageBitmap?>(null)
+    /** Technical description of the source and the last run, shown in the details sheet. */
+    private var technical by mutableStateOf("")
+    private var saving by mutableStateOf(Saving.Idle)
+    /** The update check's progress, or null when idle. */
+    private var updating by mutableStateOf<String?>(null)
 
     private var source: Uri? = null
     private var sourceInfo: SourceInfo? = null
     private var sourceSize: Long? = null
-    private var output: File? = null
     private var job: Optimizer? = null
     /** True when the video came from Share/Open with: optimize and send without any taps. */
     private var autoSend = false
-    /** Technical description of the source and the last run, shown in the details sheet. */
-    private var technical = ""
-    private val closeSheetOnBack = OnBackInvokedCallback { hideDetails() }
+    private var pendingLoad: Uri? = null
+
+    private val picker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let(::load) }
+    private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        pendingLoad?.also { pendingLoad = null }?.let(::load)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        buildUi()
+        setContent { TgPrepTheme { Screen() } }
         handleIntent(intent)
-        card.alpha = 0f
-        card.scaleX = 0.94f
-        card.scaleY = 0.94f
-        card.animate().alpha(1f).scaleX(1f).scaleY(1f).setInterpolator(Style.EASE).setDuration(600).start()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -101,17 +175,6 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    @Deprecated("Plain Activity result API; the app has no AndroidX dependency.")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_PICK && resultCode == RESULT_OK) data?.data?.let(::load)
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_LOCATION) pendingLoad?.also { pendingLoad = null }?.let(::load)
-    }
-
     private fun handleIntent(intent: Intent?) {
         val uri = when (intent?.action) {
             Intent.ACTION_SEND -> intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
@@ -122,60 +185,50 @@ class MainActivity : Activity() {
         if (uri != null) load(uri) else showIdle()
     }
 
-    private var pendingLoad: Uri? = null
-
     private fun load(uri: Uri) {
+        // The picker can still open from buttons that are fading out as optimizing starts.
+        if (job != null) return
         // Without ACCESS_MEDIA_LOCATION, MediaProvider strips the GPS from the shared file. Ask once;
         // continue either way.
+        val prefs = getPreferences(MODE_PRIVATE)
         if (checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-            !getPreferences(MODE_PRIVATE).getBoolean(PREF_ASKED_LOCATION, false)
+            !prefs.getBoolean(PREF_ASKED_LOCATION, false)
         ) {
-            getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_ASKED_LOCATION, true).apply()
+            prefs.edit { putBoolean(PREF_ASKED_LOCATION, true) }
             pendingLoad = uri
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), REQUEST_LOCATION)
+            locationPermission.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
             return
         }
         source = uri
-        output = null
-        show(
-            title = if (autoSend) "Preparing for Telegram" else "Opening video…",
-            subtitle = "",
-            busy = true,
-        )
-        progress.reset()
-        Thread {
-            val result = runCatching { Optimizer(this, uri).probe() }
-            val preview = runCatching { contentResolver.loadThumbnail(uri, Size(720, 720), null) }.getOrNull()
-            val size = querySize(uri)
-            runOnUiThread {
-                setThumbnail(preview)
-                result.onSuccess { info ->
-                    sourceInfo = info
-                    sourceSize = size
-                    technical = "Source\n${info.describe()}"
-                    if (autoSend) {
-                        optimize()
-                    } else {
-                        show(
-                            title = videoTitle(info),
-                            subtitle = "Ready to optimize for Telegram.",
-                            chips = sourceChips(info),
-                            primaryText = "Optimize for Telegram",
-                            onPrimary = ::optimize,
-                            showPick = true,
-                        )
-                    }
-                }.onFailure {
-                    technical = it.toString()
-                    showFailure("Can't read this video", it, retry = null)
-                }
+        sourceInfo = null
+        technical = ""
+        thumbnail = null
+        stage = Stage.Opening(autoSend)
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { Optimizer(this@MainActivity, uri).probe() } }
+            val preview = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.loadThumbnail(uri, Size(720, 720), null) }.getOrNull()
             }
-        }.start()
+            val size = withContext(Dispatchers.IO) { querySize(uri) }
+            // Another video came in while this one was read.
+            if (source != uri) return@launch
+            thumbnail = preview?.asImageBitmap()
+            result.onSuccess { info ->
+                sourceInfo = info
+                sourceSize = size
+                technical = "Source\n${info.describe()}"
+                if (autoSend) optimize() else stage = Stage.Ready(videoTitle(info), "Ready to optimize for Telegram.", sourceTags(info))
+            }.onFailure {
+                technical = it.toString()
+                fail("Can't read this video", it, canRetry = false)
+            }
+        }
     }
 
     private fun optimize() {
         val uri = source ?: return
         val info = sourceInfo ?: return
+        if (job != null) return
         OutputProvider.clear(this)
         val base = sourceBaseName(uri) ?: "TgPrep_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}"
         // The full file keeps the location for the gallery copy. Telegram uploads files untouched, so the
@@ -184,78 +237,46 @@ class MainActivity : Activity() {
         val shareFile = File(OutputProvider.outputDir(this), "${base}_TG.mp4")
         val optimizer = Optimizer(this, uri)
         job = optimizer
-        show(
-            title = if (autoSend) "Preparing for Telegram" else "Optimizing…",
-            subtitle = "0%",
-            chips = sourceChips(info),
-            busy = true,
-            primaryText = "Cancel",
-            primaryAccent = false,
-            onPrimary = { optimizer.cancelled = true },
-        )
-        progress.setProgress(0f)
+        progress = 0f
+        stage = Stage.Optimizing(autoSend, sourceTags(info))
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val plan = optimizer.plan(info)
-        Thread {
-            val result = runCatching {
-                val report = optimizer.run(info, plan, out) { p ->
-                    runOnUiThread {
-                        progress.setProgress(p)
-                        subtitle.text = "${(p * 100).toInt()}%"
-                    }
-                }
-                Mp4Meta.copyWithoutLocation(out, shareFile)
-                report
-            }
-            runOnUiThread {
-                job = null
-                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                result.onSuccess { report ->
-                    output = out
-                    technical = "Source\n${info.describe()}\n\nResult\n$report"
-                    // Telegram never preselects its top quality step, and only that step sends the file untouched.
-                    val hint = "In Telegram, pick ${min(plan.width, plan.height)}p (top quality) so it's sent as is."
-                    if (autoSend) {
-                        Toast.makeText(this, hint, Toast.LENGTH_LONG).show()
-                        share(shareFile, direct = true)
-                        finish()
-                        return@runOnUiThread
-                    }
-                    content.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                    show(
-                        title = "Ready to send",
-                        subtitle = hint,
-                        chips = resultChips(plan, shareFile.length()),
-                        primaryText = "Send to Telegram",
-                        onPrimary = { share(shareFile, direct = true) },
-                        onPrimaryLong = { share(shareFile, direct = false) },
-                        showSave = true,
-                        showPick = true,
-                    )
-                }.onFailure {
-                    if (optimizer.cancelled) {
-                        if (autoSend) {
-                            finish()
-                        } else {
-                            show(
-                                title = videoTitle(info),
-                                subtitle = "Cancelled.",
-                                chips = sourceChips(info),
-                                primaryText = "Optimize for Telegram",
-                                onPrimary = ::optimize,
-                                showPick = true,
-                            )
-                        }
-                        return@runOnUiThread
-                    }
-                    Log.w("optimize failed: ${it.stackTraceToString()}")
-                    // Full trace goes to logcat; the details sheet shows the readable chain of causes.
-                    technical = "Source\n${info.describe()}\n\nError\n" +
-                        generateSequence(it) { e -> e.cause }.take(3).joinToString("\n\ncaused by: ") { e -> e.toString() }
-                    showFailure("Couldn't optimize this video", it, retry = ::optimize)
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.Default) {
+                runCatching {
+                    val report = optimizer.run(info, plan, out) { progress = it }
+                    Mp4Meta.copyWithoutLocation(out, shareFile)
+                    report
                 }
             }
-        }.start()
+            job = null
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // A cancel during the last copy lets the run succeed, but the result mustn't be sent.
+            if (optimizer.cancelled) {
+                if (autoSend) finish() else stage = Stage.Ready(videoTitle(info), "Cancelled.", sourceTags(info))
+                return@launch
+            }
+            result.onSuccess { report ->
+                technical = "Source\n${info.describe()}\n\nResult\n$report"
+                // Telegram never preselects its top quality step, and only that step sends the file untouched.
+                val hint = "In Telegram, pick ${min(plan.width, plan.height)}p (top quality) so it's sent as is."
+                if (autoSend) {
+                    Toast.makeText(this@MainActivity, hint, Toast.LENGTH_LONG).show()
+                    share(shareFile, direct = true)
+                    finish()
+                    return@launch
+                }
+                window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                saving = Saving.Idle
+                stage = Stage.Done(hint, resultTags(plan, shareFile.length()), shareFile, out)
+            }.onFailure {
+                Log.w("optimize failed: ${it.stackTraceToString()}")
+                // Full trace goes to logcat; the details sheet shows the readable chain of causes.
+                technical = "Source\n${info.describe()}\n\nError\n" +
+                    generateSequence(it) { e -> e.cause }.take(3).joinToString("\n\ncaused by: ") { e -> e.toString() }
+                fail("Couldn't optimize this video", it, canRetry = true)
+            }
+        }
     }
 
     private fun share(file: File, direct: Boolean) {
@@ -275,32 +296,35 @@ class MainActivity : Activity() {
     }
 
     private fun saveToGallery(file: File) {
+        if (saving != Saving.Idle) return
         val createdMs = sourceInfo?.createdMs
-        save.isEnabled = false
-        Thread {
-            val result = runCatching {
-                val values = ContentValues().apply {
-                    put(MediaStore.Video.Media.DISPLAY_NAME, file.name.removeSuffix(".full.mp4") + ".mp4")
-                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                    // The camera folder, so the copy shows up in Photos next to the original.
-                    put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/Camera")
-                    createdMs?.let { put(MediaStore.Video.Media.DATE_TAKEN, it) }
-                    put(MediaStore.Video.Media.IS_PENDING, 1)
-                }
-                val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)!!
-                contentResolver.openOutputStream(uri)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
-                contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
-            }
-            runOnUiThread {
-                if (result.isSuccess) {
-                    save.text = "Saved to gallery"
-                    content.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                } else {
-                    save.isEnabled = true
-                    Toast.makeText(this, "Save failed", Toast.LENGTH_SHORT).show()
+        saving = Saving.Busy
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Video.Media.DISPLAY_NAME, file.name.removeSuffix(".full.mp4") + ".mp4")
+                        put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                        // The camera folder, so the copy shows up in Photos next to the original.
+                        put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/Camera")
+                        createdMs?.let { put(MediaStore.Video.Media.DATE_TAKEN, it) }
+                        put(MediaStore.Video.Media.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)!!
+                    contentResolver.openOutputStream(uri)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
+                    contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
                 }
             }
-        }.start()
+            // The user may have moved on to another video while this one was copied.
+            if ((stage as? Stage.Done)?.fullFile != file) return@launch
+            if (result.isSuccess) {
+                saving = Saving.Done
+                window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            } else {
+                saving = Saving.Idle
+                snackbar.showSnackbar("Save failed")
+            }
+        }
     }
 
     /** Return the source's file name without extension, reduced to file-safe characters, or null if unknown. */
@@ -328,131 +352,34 @@ class MainActivity : Activity() {
     }
 
     private fun pickVideo() {
-        @Suppress("DEPRECATION")
-        startActivityForResult(Intent(MediaStore.ACTION_PICK_IMAGES).setType("video/*"), REQUEST_PICK)
+        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
     }
 
     private fun checkForUpdates() {
         if (!packageManager.canRequestPackageInstalls()) {
             // Android asks once per app before it may install anything, updates included.
             Toast.makeText(this, "Allow TG Prep to install updates, then tap again", Toast.LENGTH_LONG).show()
-            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:$packageName".toUri()))
             return
         }
-        Updater.update(this) { state ->
-            update.text = state ?: "Check for updates"
-            update.isEnabled = state == null
-        }
+        Updater.update(this) { updating = it }
     }
-
-    // ---- Screen states ----
 
     private fun showIdle() {
         technical = ""
-        setThumbnail(null)
-        show(
-            title = "Share a video to TG Prep",
-            subtitle = "Or pick one here. It's converted for Telegram with true-to-life colors and smooth motion.",
-            primaryText = "Pick video",
-            onPrimary = ::pickVideo,
-            showUpdate = true,
-        )
+        thumbnail = null
+        stage = Stage.Idle
     }
 
-    private fun showFailure(heading: String, error: Throwable, retry: (() -> Unit)?) {
+    private fun fail(heading: String, error: Throwable, canRetry: Boolean) {
         val cause = generateSequence(error) { it.cause }.last()
-        show(
-            title = heading,
-            subtitle = cause.message?.takeIf { it.isNotBlank() } ?: cause.javaClass.simpleName,
-            primaryText = if (retry != null) "Try again" else "Pick video",
-            onPrimary = retry ?: ::pickVideo,
-            showPick = retry != null,
-        )
-    }
-
-    /** Morph the card and buttons into a new state. */
-    private fun show(
-        title: String,
-        subtitle: String,
-        chips: List<String> = emptyList(),
-        busy: Boolean = false,
-        primaryText: String? = null,
-        primaryAccent: Boolean = true,
-        onPrimary: (() -> Unit)? = null,
-        onPrimaryLong: (() -> Unit)? = null,
-        showSave: Boolean = false,
-        showPick: Boolean = false,
-        showUpdate: Boolean = false,
-    ) {
-        TransitionManager.beginDelayedTransition(
-            content,
-            AutoTransition().apply {
-                duration = 420
-                interpolator = Style.EASE
-            },
-        )
-        this.title.text = title
-        this.subtitle.text = subtitle
-        this.subtitle.visibility = if (subtitle.isEmpty()) View.GONE else View.VISIBLE
-        setChips(chips)
-        progress.visibility = if (busy) View.VISIBLE else View.GONE
-        primary.visibility = if (primaryText != null) View.VISIBLE else View.GONE
-        primaryText?.let { primary.text = it }
-        primary.accent = primaryAccent
-        primary.isEnabled = true
-        primary.setOnClickListener { onPrimary?.invoke() }
-        if (onPrimaryLong != null) {
-            primary.setOnLongClickListener { onPrimaryLong(); true }
-        } else {
-            primary.setOnLongClickListener(null)
-            primary.isLongClickable = false
-        }
-        save.visibility = if (showSave) View.VISIBLE else View.GONE
-        save.text = "Save to gallery"
-        save.isEnabled = true
-        pick.visibility = if (showPick) View.VISIBLE else View.GONE
-        // The gap between the two buttons only applies when both are shown.
-        (save.layoutParams as LinearLayout.LayoutParams).marginEnd = if (showPick) dpi(6) else 0
-        (pick.layoutParams as LinearLayout.LayoutParams).marginStart = if (showSave) dpi(6) else 0
-        secondaryRow.visibility = if (showSave || showPick) View.VISIBLE else View.GONE
-        update.visibility = if (showUpdate) View.VISIBLE else View.GONE
-        info.visibility = if (technical.isNotEmpty()) View.VISIBLE else View.GONE
-    }
-
-    private fun setThumbnail(bitmap: Bitmap?) {
-        thumb.setImageBitmap(bitmap)
-        thumb.visibility = if (bitmap != null) View.VISIBLE else View.GONE
-        icon.visibility = if (bitmap != null) View.GONE else View.VISIBLE
-    }
-
-    private fun setChips(labels: List<String>) {
-        chips.removeAllViews()
-        chips.visibility = if (labels.isEmpty()) View.GONE else View.VISIBLE
-        labels.forEachIndexed { i, label ->
-            chips.addView(
-                TextView(this).apply {
-                    text = label
-                    textSize = 13f
-                    typeface = Style.SEMIBOLD
-                    setTextColor(Style.TEXT)
-                    setPadding(dpi(12), dpi(6), dpi(12), dpi(6))
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(14f)
-                        setColor(0x14FFFFFF)
-                        setStroke(dpi(1), 0x26FFFFFF)
-                    }
-                },
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    if (i > 0) marginStart = dpi(8)
-                },
-            )
-        }
+        stage = Stage.Failed(heading, cause.message?.takeIf { it.isNotBlank() } ?: cause.javaClass.simpleName, canRetry)
     }
 
     private fun videoTitle(info: SourceInfo): String =
         info.createdMs?.let { "Video · ${SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()).format(Date(it))}" } ?: "Video"
 
-    private fun sourceChips(info: SourceInfo): List<String> {
+    private fun sourceTags(info: SourceInfo): List<String> {
         val kind = when {
             info.dvProfile != null -> "Dolby Vision"
             info.isHdr -> "HDR"
@@ -463,223 +390,481 @@ class MainActivity : Activity() {
         return listOf(kind, "${short}p · ${info.fps.roundToInt()} fps", "%d:%02d".format(seconds / 60, seconds % 60))
     }
 
-    private fun resultChips(plan: Plan, bytes: Long): List<String> {
-        val chips = mutableListOf("${min(plan.width, plan.height)}p · ${plan.fps} fps", "%.1f MB".format(bytes / 1e6))
-        sourceSize?.takeIf { it > bytes }?.let { chips += "−${((1 - bytes.toDouble() / it) * 100).roundToInt()}%" }
-        return chips
+    private fun resultTags(plan: Plan, bytes: Long): List<String> {
+        val tags = mutableListOf("${min(plan.width, plan.height)}p · ${plan.fps} fps", "%.1f MB".format(bytes / 1e6))
+        sourceSize?.takeIf { it > bytes }?.let { tags += "−${((1 - bytes.toDouble() / it) * 100).roundToInt()}%" }
+        return tags
     }
 
-    // ---- Details sheet ----
+    // ---- Screen ----
 
-    private fun showDetails() {
-        detailsText.text = technical
-        // Long details scroll inside the sheet instead of pushing it off screen.
-        val maxHeight = (content.height * 0.6f).toInt()
-        detailsText.measure(
-            View.MeasureSpec.makeMeasureSpec(content.width - dpi(64), View.MeasureSpec.AT_MOST),
-            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
-        )
-        detailsScroll.layoutParams = detailsScroll.layoutParams.apply { height = min(detailsText.measuredHeight, maxHeight) }
-        scrim.visibility = View.VISIBLE
-        sheet.visibility = View.VISIBLE
-        scrim.alpha = 0f
-        scrim.animate().alpha(1f).setDuration(250).start()
-        sheet.post {
-            sheet.translationY = sheet.height.toFloat() + dp(40f)
-            sheet.animate().translationY(0f).setInterpolator(Style.EASE).setDuration(480).start()
-        }
-        onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, closeSheetOnBack)
-    }
-
-    private fun hideDetails() {
-        onBackInvokedDispatcher.unregisterOnBackInvokedCallback(closeSheetOnBack)
-        scrim.animate().alpha(0f).setDuration(250).withEndAction { scrim.visibility = View.GONE }.start()
-        sheet.animate().translationY(sheet.height.toFloat() + dp(40f)).setInterpolator(Style.EASE).setDuration(320)
-            .withEndAction { sheet.visibility = View.GONE }.start()
-    }
-
-    // ---- Layout ----
-
-    private fun buildUi() {
-        window.setDecorFitsSystemWindows(false)
-        val root = FrameLayout(this)
-        backdrop = Backdrop(this)
-        root.addView(backdrop, FrameLayout.LayoutParams(MATCH, MATCH))
-
-        content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-        }
-        root.addView(content, FrameLayout.LayoutParams(MATCH, MATCH))
-
-        // Header: app name and the info button for technical details.
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        header.addView(
-            TextView(this).apply {
-                text = "TG Prep"
-                textSize = 28f
-                typeface = Style.BOLD
-                setTextColor(Style.TEXT)
+    @Composable
+    private fun Screen() {
+        val bar = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+        val motion = MaterialTheme.motionScheme
+        var details by rememberSaveable { mutableStateOf(false) }
+        // Cards in the bright surface color stand out from it, in light and dark alike.
+        val background = MaterialTheme.colorScheme.surfaceContainer
+        Scaffold(
+            modifier = Modifier.nestedScroll(bar.nestedScrollConnection),
+            containerColor = background,
+            topBar = {
+                LargeFlexibleTopAppBar(
+                    title = { Text("TG Prep") },
+                    subtitle = { Text("HDR video that Telegram sends as is") },
+                    actions = {
+                        AnimatedVisibility(
+                            technical.isNotEmpty(),
+                            enter = scaleIn(motion.defaultSpatialSpec()) + fadeIn(motion.defaultEffectsSpec()),
+                            exit = scaleOut(motion.fastSpatialSpec()) + fadeOut(motion.fastEffectsSpec()),
+                        ) {
+                            IconButton(onClick = { details = true }) { Symbol(R.drawable.sym_info, description = "Technical details") }
+                        }
+                        Menu()
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = background,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
+                    scrollBehavior = bar,
+                )
             },
-            LinearLayout.LayoutParams(0, WRAP, 1f),
-        )
-        info = GlassButton(this).apply {
-            text = "i"
-            minimumHeight = 0
-            cornerRadius = dp(22f)
-            backdrop = this@MainActivity.backdrop
-            contentDescription = "Technical details"
-            setOnClickListener { showDetails() }
-            visibility = View.GONE
+            bottomBar = { Actions(stage) },
+            snackbarHost = { SnackbarHost(snackbar) },
+        ) { insets ->
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .consumeWindowInsets(insets)
+                    .verticalScroll(rememberScrollState())
+                    .padding(insets)
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                UpdateProgress(updating)
+                Hero(heroView(stage), thumbnail, progress.takeIf { stage is Stage.Optimizing })
+            }
         }
-        header.addView(info, LinearLayout.LayoutParams(dpi(44), dpi(44)))
-        content.addView(header, LinearLayout.LayoutParams(MATCH, WRAP))
+        if (details) DetailsSheet(technical) { details = false }
+    }
 
-        content.addView(View(this), LinearLayout.LayoutParams(MATCH, 0, 1f))
-
-        // Main card: preview, title, short facts, progress.
-        card = GlassPanel(this).apply {
-            backdrop = this@MainActivity.backdrop
-            cornerRadius = dp(32f)
-        }
-        val cardBody = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dpi(20), dpi(20), dpi(20), dpi(24))
-        }
-        thumb = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            clipToOutline = true
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, dp(22f))
+    /** The top bar's overflow menu: updates and the version. */
+    @Composable
+    private fun Menu() {
+        var open by remember { mutableStateOf(false) }
+        val versionName = remember { packageManager.getPackageInfo(packageName, 0).versionName }
+        Box {
+            IconButton(onClick = { open = true }) { Symbol(R.drawable.sym_more_vert, description = "More") }
+            DropdownMenuPopup(expanded = open, onDismissRequest = { open = false }) {
+                DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
+                    DropdownMenuItem(
+                        onClick = {
+                            open = false
+                            checkForUpdates()
+                        },
+                        text = { Text("Check for updates") },
+                        supportingText = { Text("Version $versionName") },
+                        shape = MenuDefaults.itemShape(0, 1).shape,
+                        leadingIcon = { Symbol(R.drawable.sym_system_update) },
+                        enabled = updating == null,
+                    )
                 }
             }
-            visibility = View.GONE
         }
-        cardBody.addView(thumb, LinearLayout.LayoutParams(MATCH, dpi(260)).apply { bottomMargin = dpi(20) })
-        icon = ImageView(this).apply { setImageResource(R.drawable.ic_play) }
-        cardBody.addView(icon, LinearLayout.LayoutParams(dpi(88), dpi(88)).apply { bottomMargin = dpi(16) })
-        title = TextView(this).apply {
-            textSize = 22f
-            typeface = Style.BOLD
-            setTextColor(Style.TEXT)
-            gravity = Gravity.CENTER
-        }
-        cardBody.addView(title, LinearLayout.LayoutParams(MATCH, WRAP))
-        subtitle = TextView(this).apply {
-            textSize = 15f
-            setTextColor(Style.TEXT_DIM)
-            gravity = Gravity.CENTER
-            setLineSpacing(0f, 1.15f)
-        }
-        cardBody.addView(subtitle, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(8) })
-        chips = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-        cardBody.addView(chips, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(16) })
-        progress = GlassProgress(this)
-        cardBody.addView(progress, LinearLayout.LayoutParams(MATCH, dpi(8)).apply { topMargin = dpi(20) })
-        card.addView(cardBody, FrameLayout.LayoutParams(MATCH, WRAP))
-        content.addView(card, LinearLayout.LayoutParams(MATCH, WRAP))
-
-        content.addView(View(this), LinearLayout.LayoutParams(MATCH, 0, 1f))
-
-        // Actions.
-        primary = GlassButton(this).apply {
-            backdrop = this@MainActivity.backdrop
-            accent = true
-        }
-        content.addView(primary, LinearLayout.LayoutParams(MATCH, WRAP))
-        secondaryRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        save = GlassButton(this).apply {
-            backdrop = this@MainActivity.backdrop
-            setOnClickListener { output?.let(::saveToGallery) }
-        }
-        pick = GlassButton(this).apply {
-            text = "Another video"
-            backdrop = this@MainActivity.backdrop
-            setOnClickListener { pickVideo() }
-        }
-        secondaryRow.addView(save, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginEnd = dpi(6) })
-        secondaryRow.addView(pick, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dpi(6) })
-        content.addView(secondaryRow, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(12) })
-        update = GlassButton(this).apply {
-            text = "Check for updates"
-            backdrop = this@MainActivity.backdrop
-            setOnClickListener { checkForUpdates() }
-        }
-        content.addView(update, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(12) })
-
-        // Details sheet over a dimmed screen.
-        scrim = View(this).apply {
-            setBackgroundColor(0xB3000000.toInt())
-            visibility = View.GONE
-            setOnClickListener { hideDetails() }
-        }
-        root.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
-        sheet = GlassPanel(this).apply {
-            backdrop = this@MainActivity.backdrop
-            tint = 0xF00B0B0C.toInt()
-            visibility = View.GONE
-            isClickable = true
-        }
-        val sheetBody = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dpi(22), dpi(20), dpi(22), dpi(16))
-        }
-        sheetBody.addView(
-            TextView(this).apply {
-                text = "Technical details"
-                textSize = 18f
-                typeface = Style.BOLD
-                setTextColor(Style.TEXT)
-            },
-        )
-        detailsText = TextView(this).apply {
-            textSize = 12.5f
-            typeface = Typeface.MONOSPACE
-            setTextColor(Style.TEXT_DIM)
-            setTextIsSelectable(true)
-            setLineSpacing(0f, 1.2f)
-        }
-        detailsScroll = ScrollView(this).apply { addView(detailsText) }
-        sheetBody.addView(
-            detailsScroll,
-            LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(12) },
-        )
-        sheetBody.addView(
-            GlassButton(this).apply {
-                text = "Close"
-                backdrop = this@MainActivity.backdrop
-                setOnClickListener { hideDetails() }
-            },
-            LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(16) },
-        )
-        sheet.addView(sheetBody, FrameLayout.LayoutParams(MATCH, WRAP))
-        root.addView(sheet, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
-
-        // Edge to edge: the backdrop fills the screen; content stays clear of the system bars.
-        root.setOnApplyWindowInsetsListener { _, insets ->
-            val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            val side = dpi(20)
-            content.setPadding(bars.left + side, bars.top + dpi(12), bars.right + side, bars.bottom + dpi(16))
-            (sheet.layoutParams as FrameLayout.LayoutParams).setMargins(bars.left + dpi(10), 0, bars.right + dpi(10), bars.bottom + dpi(10))
-            insets
-        }
-        setContentView(root)
     }
 
-    private companion object {
-        const val REQUEST_PICK = 1
-        const val REQUEST_LOCATION = 2
-        const val PREF_ASKED_LOCATION = "asked_media_location"
-        const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
-        const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
-        val TELEGRAM_PACKAGES = listOf("org.telegram.messenger", "org.telegram.messenger.web", "org.telegram.messenger.beta")
+    /** The buttons for [stage], at the bottom where the thumb reaches them. */
+    @Composable
+    private fun Actions(stage: Stage) {
+        val motion = MaterialTheme.motionScheme
+        AnimatedContent(
+            targetState = stage,
+            // Only a new kind of stage swaps the buttons.
+            contentKey = { it::class },
+            transitionSpec = {
+                (fadeIn(motion.defaultEffectsSpec()) + slideInVertically(motion.defaultSpatialSpec()) { it / 4 }) togetherWith
+                    fadeOut(motion.fastEffectsSpec())
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                .padding(16.dp),
+            label = "actions",
+        ) { shown ->
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                when (shown) {
+                    Stage.Idle -> MainButton("Pick video", R.drawable.sym_video_library, onClick = ::pickVideo)
+                    is Stage.Opening -> Unit
+                    is Stage.Ready -> {
+                        MainButton("Optimize for Telegram", R.drawable.sym_auto_awesome, onClick = ::optimize)
+                        SecondaryButtons(null)
+                    }
+                    is Stage.Optimizing -> MainButton("Cancel", R.drawable.sym_close, tonal = true) { job?.cancelled = true }
+                    is Stage.Done -> {
+                        SendButton(shown.shareFile)
+                        SecondaryButtons(shown.fullFile)
+                    }
+                    is Stage.Failed ->
+                        if (shown.canRetry) {
+                            MainButton("Try again", R.drawable.sym_refresh, onClick = ::optimize)
+                            SecondaryButtons(null)
+                        } else {
+                            MainButton("Pick video", R.drawable.sym_video_library, onClick = ::pickVideo)
+                        }
+                }
+            }
+        }
+    }
+
+    /** Send to Telegram, with a menu to pick another app. */
+    @Composable
+    private fun SendButton(file: File) {
+        val height = SplitButtonDefaults.MediumContainerHeight
+        var menu by remember { mutableStateOf(false) }
+        SplitButtonLayout(
+            leadingButton = {
+                SplitButtonDefaults.LeadingButton(
+                    onClick = { share(file, direct = true) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = height),
+                    shapes = SplitButtonDefaults.leadingButtonShapesFor(height),
+                    contentPadding = SplitButtonDefaults.MediumLeadingButtonContentPadding,
+                ) {
+                    Symbol(R.drawable.sym_send, Modifier.size(SplitButtonDefaults.leadingButtonIconSizeFor(height)))
+                    Spacer(Modifier.width(ButtonDefaults.iconSpacingFor(height)))
+                    Text("Send to Telegram", style = ButtonDefaults.textStyleFor(height))
+                }
+            },
+            trailingButton = {
+                Box {
+                    val turn by animateFloatAsState(if (menu) 180f else 0f, MaterialTheme.motionScheme.defaultSpatialSpec(), label = "turn")
+                    SplitButtonDefaults.TrailingButton(
+                        checked = menu,
+                        onCheckedChange = { menu = it },
+                        modifier = Modifier.heightIn(min = height),
+                        shapes = SplitButtonDefaults.trailingButtonShapesFor(height),
+                        contentPadding = SplitButtonDefaults.MediumTrailingButtonContentPadding,
+                    ) {
+                        Symbol(
+                            R.drawable.sym_keyboard_arrow_down,
+                            Modifier.size(SplitButtonDefaults.trailingButtonIconSizeFor(height)).rotate(turn),
+                            description = "More ways to send",
+                        )
+                    }
+                    DropdownMenuPopup(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
+                            DropdownMenuItem(
+                                onClick = {
+                                    menu = false
+                                    share(file, direct = false)
+                                },
+                                text = { Text("Send with another app") },
+                                shape = MenuDefaults.itemShape(0, 1).shape,
+                                leadingIcon = { Symbol(R.drawable.sym_share) },
+                            )
+                        }
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+
+    /** Save to gallery (once there's a [result]) and Another video, side by side. */
+    @Composable
+    private fun SecondaryButtons(result: File?) {
+        val height = ButtonDefaults.MediumContainerHeight
+        ButtonGroup(overflowIndicator = {}, modifier = Modifier.fillMaxWidth()) {
+            if (result != null) {
+                customItem(
+                    buttonGroupContent = {
+                        val interaction = remember { MutableInteractionSource() }
+                        val (label, icon) = when (saving) {
+                            Saving.Idle -> "Save to gallery" to R.drawable.sym_download
+                            Saving.Busy -> "Saving…" to R.drawable.sym_download
+                            Saving.Done -> "Saved to gallery" to R.drawable.sym_check
+                        }
+                        FilledTonalButton(
+                            onClick = { saveToGallery(result) },
+                            modifier = Modifier.weight(1f).animateWidth(interaction).heightIn(min = height),
+                            enabled = saving == Saving.Idle,
+                            shapes = ButtonDefaults.shapesFor(height),
+                            contentPadding = ButtonDefaults.contentPaddingFor(height),
+                            interactionSource = interaction,
+                        ) { ButtonLabel(label, icon) }
+                    },
+                    menuContent = {},
+                )
+            }
+            customItem(
+                buttonGroupContent = {
+                    val interaction = remember { MutableInteractionSource() }
+                    FilledTonalButton(
+                        onClick = ::pickVideo,
+                        modifier = Modifier.weight(1f).animateWidth(interaction).heightIn(min = height),
+                        shapes = ButtonDefaults.shapesFor(height),
+                        contentPadding = ButtonDefaults.contentPaddingFor(height),
+                        interactionSource = interaction,
+                    ) { ButtonLabel("Another video", R.drawable.sym_video_library) }
+                },
+                menuContent = {},
+            )
+        }
     }
 }
+
+/** What the screen shows. */
+private sealed interface Stage {
+    data object Idle : Stage
+
+    /** Reading the video; from Share, optimizing and sending follow without a tap. */
+    data class Opening(val autoSend: Boolean) : Stage
+
+    data class Ready(val title: String, val note: String, val tags: List<String>) : Stage
+
+    data class Optimizing(val autoSend: Boolean, val tags: List<String>) : Stage
+
+    /** [shareFile] has the location removed for chats; [fullFile] keeps it for the gallery copy. */
+    data class Done(val hint: String, val tags: List<String>, val shareFile: File, val fullFile: File) : Stage
+
+    data class Failed(val heading: String, val message: String, val canRetry: Boolean) : Stage
+}
+
+private enum class Saving { Idle, Busy, Done }
+
+/** How a [Stage] reads in the hero card. */
+private class HeroView(
+    val title: String,
+    val detail: String,
+    val tags: List<String>,
+    val shape: RoundedPolygon,
+    val icon: Int,
+    val container: Color,
+    val accent: Color,
+    val onAccent: Color,
+    /** A loading indicator takes the place of the shape and icon. */
+    val busy: Boolean = false,
+)
+
+@Composable
+private fun heroView(stage: Stage): HeroView {
+    val colors = MaterialTheme.colorScheme
+    return when (stage) {
+        Stage.Idle -> HeroView(
+            "Share a video to TG Prep",
+            "Or pick one here. It's converted for Telegram with true-to-life colors and smooth motion.",
+            emptyList(),
+            MaterialShapes.Cookie12Sided,
+            R.drawable.sym_movie,
+            colors.surfaceBright,
+            colors.primaryContainer,
+            colors.onPrimaryContainer,
+        )
+        is Stage.Opening -> HeroView(
+            if (stage.autoSend) "Preparing for Telegram" else "Opening video…",
+            "",
+            emptyList(),
+            MaterialShapes.Cookie12Sided,
+            R.drawable.sym_movie,
+            colors.surfaceBright,
+            colors.primaryContainer,
+            colors.onPrimaryContainer,
+            busy = true,
+        )
+        is Stage.Ready -> HeroView(
+            stage.title,
+            stage.note,
+            stage.tags,
+            MaterialShapes.Clover4Leaf,
+            R.drawable.sym_movie,
+            colors.surfaceBright,
+            colors.primary,
+            colors.onPrimary,
+        )
+        is Stage.Optimizing -> HeroView(
+            if (stage.autoSend) "Preparing for Telegram" else "Optimizing…",
+            "",
+            stage.tags,
+            MaterialShapes.Clover4Leaf,
+            R.drawable.sym_movie,
+            colors.surfaceBright,
+            colors.primary,
+            colors.onPrimary,
+            busy = true,
+        )
+        is Stage.Done -> HeroView(
+            "Ready to send",
+            stage.hint,
+            stage.tags,
+            MaterialShapes.Cookie9Sided,
+            R.drawable.sym_check,
+            colors.primaryContainer,
+            colors.primary,
+            colors.onPrimary,
+        )
+        is Stage.Failed -> HeroView(
+            stage.heading,
+            stage.message,
+            emptyList(),
+            MaterialShapes.SoftBurst,
+            R.drawable.sym_priority_high,
+            colors.errorContainer,
+            colors.error,
+            colors.onError,
+        )
+    }
+}
+
+/** The video and where it stands: preview, a badge that morphs with the stage, title, and short facts. */
+@Composable
+private fun Hero(view: HeroView, thumbnail: ImageBitmap?, progress: Float?) {
+    val motion = MaterialTheme.motionScheme
+    val container by animateColorAsState(view.container, motion.defaultEffectsSpec(), label = "container")
+    // Looked up from the target color: the in-between colors of the animation match no scheme role.
+    val content by animateColorAsState(contentColorFor(view.container), motion.defaultEffectsSpec(), label = "content")
+    Surface(
+        color = container,
+        contentColor = content,
+        shape = MaterialTheme.shapes.extraLargeIncreased,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.animateContentSize(motion.defaultSpatialSpec()).padding(24.dp)) {
+            if (thumbnail != null) {
+                Box {
+                    Image(
+                        thumbnail,
+                        contentDescription = "Video preview",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxWidth().height(240.dp).clip(MaterialTheme.shapes.extraLarge),
+                    )
+                    StageBadge(view, Modifier.align(Alignment.BottomStart).padding(12.dp).size(72.dp))
+                }
+            } else {
+                StageBadge(view, Modifier.size(96.dp))
+            }
+            Spacer(Modifier.height(20.dp))
+            Text(view.title, style = MaterialTheme.typography.headlineMediumEmphasized)
+            if (view.detail.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text(view.detail, style = MaterialTheme.typography.bodyLarge)
+            }
+            if (progress != null) {
+                val shown by animateFloatAsState(progress, ProgressIndicatorDefaults.ProgressAnimationSpec, label = "progress")
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${(progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.displaySmallEmphasized,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(12.dp))
+                LinearWavyProgressIndicator(progress = { shown }, modifier = Modifier.fillMaxWidth())
+            }
+            if (view.tags.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    view.tags.forEach { Tag(it) }
+                }
+            }
+        }
+    }
+}
+
+/** The stage as a shape with an icon, or a loading indicator while busy. */
+@Composable
+private fun StageBadge(view: HeroView, modifier: Modifier) {
+    val motion = MaterialTheme.motionScheme
+    val accent by animateColorAsState(view.accent, motion.defaultEffectsSpec(), label = "accent")
+    val shapeAlpha by animateFloatAsState(if (view.busy) 0f else 1f, motion.defaultEffectsSpec(), label = "shape")
+    // While busy, the hidden shape keeps the one it had, so it morphs from it to the next stage's.
+    var badge by remember { mutableStateOf(view) }
+    SideEffect { if (!view.busy) badge = view }
+    val shown = if (view.busy) badge else view
+    Box(modifier) {
+        MorphingShape(shown.shape, accent, Modifier.fillMaxSize().graphicsLayer { alpha = shapeAlpha }) {
+            Symbol(shown.icon, Modifier.fillMaxSize(0.42f), tint = shown.onAccent)
+        }
+        AnimatedVisibility(
+            view.busy,
+            enter = scaleIn(motion.defaultSpatialSpec()) + fadeIn(motion.defaultEffectsSpec()),
+            exit = scaleOut(motion.fastSpatialSpec()) + fadeOut(motion.fastEffectsSpec()),
+        ) { ContainedLoadingIndicator(Modifier.fillMaxSize()) }
+    }
+}
+
+@Composable
+private fun Tag(text: String) {
+    // A tint of the card's text color reads on every card color.
+    Surface(shape = CircleShape, color = LocalContentColor.current.copy(alpha = 0.1f)) {
+        Text(text, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+    }
+}
+
+@Composable
+private fun MainButton(text: String, icon: Int, tonal: Boolean = false, onClick: () -> Unit) {
+    val height = ButtonDefaults.MediumContainerHeight
+    val modifier = Modifier.fillMaxWidth().heightIn(min = height)
+    val shapes = ButtonDefaults.shapesFor(height)
+    val padding = ButtonDefaults.contentPaddingFor(height)
+    val content: @Composable RowScope.() -> Unit = {
+        Symbol(icon, Modifier.size(ButtonDefaults.iconSizeFor(height)))
+        Spacer(Modifier.width(ButtonDefaults.iconSpacingFor(height)))
+        Text(text, style = ButtonDefaults.textStyleFor(height))
+    }
+    if (tonal) {
+        FilledTonalButton(onClick = onClick, modifier = modifier, shapes = shapes, contentPadding = padding, content = content)
+    } else {
+        Button(onClick = onClick, modifier = modifier, shapes = shapes, contentPadding = padding, content = content)
+    }
+}
+
+/** Icon and text for a button in a [ButtonGroup], on one line. */
+@Composable
+private fun RowScope.ButtonLabel(text: String, icon: Int) {
+    Symbol(icon, Modifier.size(ButtonDefaults.IconSize))
+    Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+    Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
+/** The update check's progress, shown while there is some. */
+@Composable
+private fun UpdateProgress(progress: String?) {
+    // Keeps the last text on screen while the card collapses.
+    var last by remember { mutableStateOf("") }
+    SideEffect { if (progress != null) last = progress }
+    AnimatedVisibility(progress != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+        Surface(
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    progress ?: last,
+                    style = MaterialTheme.typography.titleMediumEmphasized,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+                LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+/** File and codec details of the source and the last run, selectable for copying. */
+@Composable
+private fun DetailsSheet(text: String, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
+            Text("Technical details", style = MaterialTheme.typography.titleLargeEmphasized)
+            Spacer(Modifier.height(12.dp))
+            SelectionContainer {
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private const val PREF_ASKED_LOCATION = "asked_media_location"
+private val TELEGRAM_PACKAGES = listOf("org.telegram.messenger", "org.telegram.messenger.web", "org.telegram.messenger.beta")

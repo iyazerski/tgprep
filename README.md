@@ -1,21 +1,21 @@
 # TG Prep
 
-A tiny private Android app (~80 KB, no network, no dependencies). It takes a Dolby Vision / HDR
+A small private Android app (~2.3 MB, network only for updates). It takes a Dolby Vision / HDR
 video from the camera and makes a file that Telegram sends **as is**, so the colors and brightness
 that other people see are the ones this app produced.
 
 **Download the latest APK:** https://github.com/iyazerski/tgprep/releases/latest/download/tgprep.apk
-After that, tap **Check for updates** on the app's start screen to update it. The first time, Android
+After that, tap **⋮ → Check for updates** in the app to update it. The first time, Android
 asks you to allow TG Prep to install apps.
 
 Flow: Gallery → Share → **TG Prep**. The app optimizes the video right away and opens Telegram's
 chat picker with the result. In Telegram, pick the top quality (1080p) → send.
 
-The screen uses a black "liquid glass" style: smoked glass panels that blur the slowly moving
-graphite light behind them (RenderEffect), solid graphite main buttons, springy presses, and animated
-state changes. It only shows what matters
-to the user (preview, HDR type, resolution, size saved). File and codec details are behind the
-**i** button.
+The screen is Material 3 Expressive (Jetpack Compose) in the wallpaper's colors, light or dark as the
+system is: a card with the preview and a badge that morphs with each step, a wavy progress bar,
+buttons that change shape when pressed, and spring motion. It only shows what matters to the user
+(preview, HDR type, resolution, size saved). File and codec details are in a sheet behind the **i**
+button. The arrow next to **Send to Telegram** sends with another app.
 
 Opening TG Prep from the launcher shows the full screen instead: pick a video, optimize, send, save a
 copy to the gallery, and see the details. If optimizing fails, the app stays open with the error
@@ -65,9 +65,9 @@ app makes 1080p and you pick 1080p by hand.
 |---|---|
 | Send the original HEVC DV | Telegram re-encodes: its tone map, 720p preselected, low bitrate. This is the problem itself. |
 | Keep HDR (H.264 High10 HLG) | Unreliable hardware decode on receivers and inconsistent HDR handling in Telegram clients. Rejected. |
-| Media3 Transformer | Works, but brings AndroidX plus ~1-2 MB, and its tone mapping/decoder choice is harder to control for DV 8.4 on ColorOS. Rejected for size and control. |
+| Media3 Transformer | Works, but its tone mapping/decoder choice is harder to control for DV 8.4 on ColorOS. Rejected for control. |
 | FFmpeg (libplacebo/zscale) in the APK | Best tone mapping, but 20-40 MB of native code, slow software decode of 4K 10-bit, and battery drain. Rejected. |
-| **MediaCodec + GLES shader (chosen)** | Hardware decode and encode, my own tone mapping, framework APIs only, ~80 KB APK. |
+| **MediaCodec + GLES shader (chosen)** | Hardware decode and encode, my own tone mapping, framework APIs only. |
 
 ## How it works
 
@@ -138,7 +138,8 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home 
 The configuration cache and build cache are on (`gradle.properties`), so a repeat build with no
 changes takes about a second.
 
-`minSdk` is 33 and `targetSdk` is 36 (Android 16). The release build is shrunk with R8.
+`minSdk` is 33 and `targetSdk` is 36 (Android 16). `compileSdk` is 37.1, which Compose (BOM
+2026.11.01, Material 3 1.5.0) needs. The release build is shrunk with R8.
 
 Checks: `prek run --all-files` runs Android lint plus ruff on the Python tools (`ruff.toml`).
 `prek install` runs them before every commit. The tools declare their own dependencies
