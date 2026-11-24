@@ -7,13 +7,6 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- Needed to target Telegram directly when sharing (package visibility, API 30+). -->
-    <queries>
-        <package android:name="org.telegram.messenger" />
-        <package android:name="org.telegram.messenger.web" />
-        <package android:name="org.telegram.messenger.beta" />
-    </queries>
-
     <application
         android:icon="@drawable/ic_launcher"
         android:label="TG Prep"

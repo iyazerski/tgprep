@@ -3,6 +3,7 @@
 package dev.tgprep
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ContentValues
 import android.content.Intent
@@ -145,17 +146,13 @@ class MainActivity : ComponentActivity() {
     /** The update check's progress, or null when idle. */
     private var updating by mutableStateOf<String?>(null)
 
-    private var source: Uri? = null
-    private var sourceInfo: SourceInfo? = null
-    private var sourceSize: Long? = null
-    private var job: Optimizer? = null
-    /** True when the video came from Share/Open with: optimize and send without any taps. */
-    private var autoSend = false
-    private var pendingLoad: Uri? = null
+    private var pendingLoad: Pair<Uri, Boolean>? = null
 
-    private val picker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let(::load) }
+    private val picker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri?.let { load(it, autoSend = false) }
+    }
     private val locationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-        pendingLoad?.also { pendingLoad = null }?.let(::load)
+        pendingLoad?.also { pendingLoad = null }?.let { (uri, autoSend) -> load(uri, autoSend) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -167,93 +164,110 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (job == null) handleIntent(intent)
+        if (stage is Stage.Optimizing) {
+            if (intent.sharedUri() != null) {
+                Toast.makeText(this, "Wait for the current video to finish", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+        setIntent(intent)
+        handleIntent(intent)
     }
 
     override fun onDestroy() {
-        job?.cancelled = true
+        (stage as? Stage.Optimizing)?.optimizer?.cancelled = true
         super.onDestroy()
     }
 
     private fun handleIntent(intent: Intent?) {
-        val uri = when (intent?.action) {
-            Intent.ACTION_SEND -> intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            Intent.ACTION_VIEW -> intent.data
-            else -> null
-        }
-        autoSend = uri != null
-        if (uri != null) load(uri) else showIdle()
+        // Reopening from Recents replays the original Share intent; don't re-send an old video.
+        val fromHistory = intent != null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        val uri = if (fromHistory) null else intent?.sharedUri()
+        if (uri != null) load(uri, autoSend = true) else showIdle()
     }
 
-    private fun load(uri: Uri) {
+    private fun Intent.sharedUri(): Uri? = when (action) {
+        Intent.ACTION_SEND -> getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        Intent.ACTION_VIEW -> data
+        else -> null
+    }
+
+    private fun load(uri: Uri, autoSend: Boolean) {
         // The picker can still open from buttons that are fading out as optimizing starts.
-        if (job != null) return
-        // Without ACCESS_MEDIA_LOCATION, MediaProvider strips the GPS from the shared file. Ask once;
-        // continue either way.
+        if (stage is Stage.Optimizing) return
+        pendingLoad = null
+        // Without ACCESS_MEDIA_LOCATION, MediaProvider strips the GPS from the video. Only the
+        // launcher flow can save a gallery copy with GPS; Share never writes location.
         val prefs = getPreferences(MODE_PRIVATE)
-        if (checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+        if (!autoSend &&
+            checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             !prefs.getBoolean(PREF_ASKED_LOCATION, false)
         ) {
             prefs.edit { putBoolean(PREF_ASKED_LOCATION, true) }
-            pendingLoad = uri
+            pendingLoad = uri to autoSend
             locationPermission.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
             return
         }
-        source = uri
-        sourceInfo = null
         technical = ""
         thumbnail = null
-        stage = Stage.Opening(autoSend)
+        saving = Saving.Idle
+        val opening = Stage.Opening(uri, autoSend)
+        stage = opening
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { Optimizer(this@MainActivity, uri).probe() } }
             val preview = withContext(Dispatchers.IO) {
                 runCatching { contentResolver.loadThumbnail(uri, Size(720, 720), null) }.getOrNull()
             }
             val size = withContext(Dispatchers.IO) { querySize(uri) }
-            // Another video came in while this one was read.
-            if (source != uri) return@launch
+            // Another video came in, or the app returned to Idle, while this one was read.
+            if (stage !== opening) return@launch
             thumbnail = preview?.asImageBitmap()
             result.onSuccess { info ->
-                sourceInfo = info
-                sourceSize = size
+                val video = LoadedVideo(uri, info, size, autoSend)
                 technical = "Source\n${info.describe()}"
-                if (autoSend) optimize() else stage = Stage.Ready(videoTitle(info), "Ready to optimize for Telegram.", sourceTags(info))
+                if (autoSend) {
+                    optimize(video)
+                } else {
+                    stage = Stage.Ready(video, videoTitle(info), "Ready to optimize for Telegram.", sourceTags(info))
+                }
             }.onFailure {
                 technical = it.toString()
-                fail("Can't read this video", it, canRetry = false)
+                fail("Can't read this video", it, retry = null)
             }
         }
     }
 
-    private fun optimize() {
-        val uri = source ?: return
-        val info = sourceInfo ?: return
-        if (job != null) return
-        OutputProvider.clear(this)
+    private fun optimize(video: LoadedVideo) {
+        if (stage is Stage.Optimizing) return
+        val (uri, info, _, autoSend) = video
         val base = sourceBaseName(uri) ?: "TgPrep_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}"
-        // The full file keeps the location for the gallery copy. Telegram uploads files untouched, so the
-        // copy that gets sent has the location removed to avoid sharing GPS with the chat.
-        val out = File(OutputProvider.outputDir(this), "${base}_TG.full.mp4")
+        // Only write a separate full file with location when the user can save a gallery copy and the
+        // source has GPS. Telegram uploads files untouched, so the shared file must never carry GPS.
+        val needsFullCopy = !autoSend && info.location != null
         val shareFile = File(OutputProvider.outputDir(this), "${base}_TG.mp4")
+        val out = if (needsFullCopy) File(OutputProvider.outputDir(this), "${base}_TG.full.mp4") else shareFile
+        OutputProvider.prune(this, keep = setOf(shareFile, out))
         val optimizer = Optimizer(this, uri)
-        job = optimizer
         progress = 0f
-        stage = Stage.Optimizing(autoSend, sourceTags(info))
+        stage = Stage.Optimizing(video, optimizer, sourceTags(info))
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val plan = optimizer.plan(info)
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.Default) {
+            val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val report = optimizer.run(info, plan, out) { progress = it }
-                    Mp4Meta.copyWithoutLocation(out, shareFile)
+                    val report = optimizer.run(info, plan, out, keepLocation = needsFullCopy) { progress = it }
+                    if (needsFullCopy) Mp4Meta.copyWithoutLocation(out, shareFile)
                     report
                 }
             }
-            job = null
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             // A cancel during the last copy lets the run succeed, but the result mustn't be sent.
             if (optimizer.cancelled) {
-                if (autoSend) finish() else stage = Stage.Ready(videoTitle(info), "Cancelled.", sourceTags(info))
+                if (autoSend) {
+                    finishAndRemoveTask()
+                } else {
+                    stage = Stage.Ready(video, videoTitle(info), "Cancelled.", sourceTags(info))
+                }
                 return@launch
             }
             result.onSuccess { report ->
@@ -263,18 +277,20 @@ class MainActivity : ComponentActivity() {
                 if (autoSend) {
                     Toast.makeText(this@MainActivity, hint, Toast.LENGTH_LONG).show()
                     share(shareFile, direct = true)
+                    // Use finish(), not finishAndRemoveTask(): a share chooser opens in our task and
+                    // removing the task would close it. Recents replay is blocked by LAUNCHED_FROM_HISTORY.
                     finish()
                     return@launch
                 }
                 window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 saving = Saving.Idle
-                stage = Stage.Done(hint, resultTags(plan, shareFile.length()), shareFile, out)
+                stage = Stage.Done(video, hint, resultTags(plan, shareFile.length(), video.size), shareFile, out)
             }.onFailure {
                 Log.w("optimize failed: ${it.stackTraceToString()}")
                 // Full trace goes to logcat; the details sheet shows the readable chain of causes.
                 technical = "Source\n${info.describe()}\n\nError\n" +
                     generateSequence(it) { e -> e.cause }.take(3).joinToString("\n\ncaused by: ") { e -> e.toString() }
-                fail("Couldn't optimize this video", it, canRetry = true)
+                fail("Couldn't optimize this video", it, retry = video)
             }
         }
     }
@@ -287,36 +303,51 @@ class MainActivity : ComponentActivity() {
             clipData = ClipData.newRawUri(file.name, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        val telegram = TELEGRAM_PACKAGES.firstOrNull { isInstalled(it) }
-        if (direct && telegram != null) {
-            startActivity(send.setPackage(telegram))
-        } else {
-            startActivity(Intent.createChooser(send, "Send video"))
+        if (direct) {
+            for (pkg in TELEGRAM_PACKAGES) {
+                try {
+                    startActivity(Intent(send).setPackage(pkg))
+                    return
+                } catch (_: ActivityNotFoundException) {
+                    // Try the next Telegram variant, then fall back to the chooser.
+                }
+            }
         }
+        startActivity(Intent.createChooser(send, "Send video"))
     }
 
-    private fun saveToGallery(file: File) {
+    private fun saveToGallery(done: Stage.Done) {
         if (saving != Saving.Idle) return
-        val createdMs = sourceInfo?.createdMs
+        val file = done.fullFile
+        val createdMs = done.video.info.createdMs
         saving = Saving.Busy
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, file.name.removeSuffix(".full.mp4") + ".mp4")
+                        val displayName = if (file.name.endsWith(".full.mp4")) file.name.removeSuffix(".full.mp4") + ".mp4" else file.name
+                        put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
                         put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                         // The camera folder, so the copy shows up in Photos next to the original.
                         put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/Camera")
                         createdMs?.let { put(MediaStore.Video.Media.DATE_TAKEN, it) }
                         put(MediaStore.Video.Media.IS_PENDING, 1)
                     }
-                    val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)!!
-                    contentResolver.openOutputStream(uri)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
-                    contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+                    val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                        ?: error("Couldn't create gallery entry")
+                    try {
+                        contentResolver.openOutputStream(uri)?.use { out ->
+                            file.inputStream().use { it.copyTo(out) }
+                        } ?: error("Couldn't open gallery entry")
+                        contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+                    } catch (e: Throwable) {
+                        runCatching { contentResolver.delete(uri, null, null) }
+                        throw e
+                    }
                 }
             }
-            // The user may have moved on to another video while this one was copied.
-            if ((stage as? Stage.Done)?.fullFile != file) return@launch
+            // The user may have moved on to another video (or re-run this one) while it was copied.
+            if (stage !== done) return@launch
             if (result.isSuccess) {
                 saving = Saving.Done
                 window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
@@ -344,13 +375,6 @@ class MainActivity : ComponentActivity() {
         }
     }.getOrNull()
 
-    private fun isInstalled(pkg: String) = try {
-        packageManager.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0))
-        true
-    } catch (_: PackageManager.NameNotFoundException) {
-        false
-    }
-
     private fun pickVideo() {
         picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
     }
@@ -368,12 +392,13 @@ class MainActivity : ComponentActivity() {
     private fun showIdle() {
         technical = ""
         thumbnail = null
+        saving = Saving.Idle
         stage = Stage.Idle
     }
 
-    private fun fail(heading: String, error: Throwable, canRetry: Boolean) {
+    private fun fail(heading: String, error: Throwable, retry: LoadedVideo?) {
         val cause = generateSequence(error) { it.cause }.last()
-        stage = Stage.Failed(heading, cause.message?.takeIf { it.isNotBlank() } ?: cause.javaClass.simpleName, canRetry)
+        stage = Stage.Failed(heading, cause.message?.takeIf { it.isNotBlank() } ?: cause.javaClass.simpleName, retry)
     }
 
     private fun videoTitle(info: SourceInfo): String =
@@ -390,7 +415,7 @@ class MainActivity : ComponentActivity() {
         return listOf(kind, "${short}p · ${info.fps.roundToInt()} fps", "%d:%02d".format(seconds / 60, seconds % 60))
     }
 
-    private fun resultTags(plan: Plan, bytes: Long): List<String> {
+    private fun resultTags(plan: Plan, bytes: Long, sourceSize: Long?): List<String> {
         val tags = mutableListOf("${min(plan.width, plan.height)}p · ${plan.fps} fps", "%.1f MB".format(bytes / 1e6))
         sourceSize?.takeIf { it > bytes }?.let { tags += "−${((1 - bytes.toDouble() / it) * 100).roundToInt()}%" }
         return tags
@@ -496,17 +521,17 @@ class MainActivity : ComponentActivity() {
                     Stage.Idle -> MainButton("Pick video", R.drawable.sym_video_library, onClick = ::pickVideo)
                     is Stage.Opening -> Unit
                     is Stage.Ready -> {
-                        MainButton("Optimize for Telegram", R.drawable.sym_auto_awesome, onClick = ::optimize)
+                        MainButton("Optimize for Telegram", R.drawable.sym_auto_awesome) { optimize(shown.video) }
                         SecondaryButtons(null)
                     }
-                    is Stage.Optimizing -> MainButton("Cancel", R.drawable.sym_close, tonal = true) { job?.cancelled = true }
+                    is Stage.Optimizing -> MainButton("Cancel", R.drawable.sym_close, tonal = true) { shown.optimizer.cancelled = true }
                     is Stage.Done -> {
                         SendButton(shown.shareFile)
-                        SecondaryButtons(shown.fullFile)
+                        SecondaryButtons(shown)
                     }
                     is Stage.Failed ->
-                        if (shown.canRetry) {
-                            MainButton("Try again", R.drawable.sym_refresh, onClick = ::optimize)
+                        if (shown.retry != null) {
+                            MainButton("Try again", R.drawable.sym_refresh) { optimize(shown.retry) }
                             SecondaryButtons(null)
                         } else {
                             MainButton("Pick video", R.drawable.sym_video_library, onClick = ::pickVideo)
@@ -571,7 +596,7 @@ class MainActivity : ComponentActivity() {
 
     /** Save to gallery (once there's a [result]) and Another video, side by side. */
     @Composable
-    private fun SecondaryButtons(result: File?) {
+    private fun SecondaryButtons(result: Stage.Done?) {
         val height = ButtonDefaults.MediumContainerHeight
         ButtonGroup(overflowIndicator = {}, modifier = Modifier.fillMaxWidth()) {
             if (result != null) {
@@ -612,21 +637,30 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** A probed video and whether it should auto-optimize and send without taps. */
+private data class LoadedVideo(val uri: Uri, val info: SourceInfo, val size: Long?, val autoSend: Boolean)
+
 /** What the screen shows. */
 private sealed interface Stage {
     data object Idle : Stage
 
     /** Reading the video; from Share, optimizing and sending follow without a tap. */
-    data class Opening(val autoSend: Boolean) : Stage
+    data class Opening(val uri: Uri, val autoSend: Boolean) : Stage
 
-    data class Ready(val title: String, val note: String, val tags: List<String>) : Stage
+    data class Ready(val video: LoadedVideo, val title: String, val note: String, val tags: List<String>) : Stage
 
-    data class Optimizing(val autoSend: Boolean, val tags: List<String>) : Stage
+    data class Optimizing(val video: LoadedVideo, val optimizer: Optimizer, val tags: List<String>) : Stage
 
     /** [shareFile] has the location removed for chats; [fullFile] keeps it for the gallery copy. */
-    data class Done(val hint: String, val tags: List<String>, val shareFile: File, val fullFile: File) : Stage
+    data class Done(
+        val video: LoadedVideo,
+        val hint: String,
+        val tags: List<String>,
+        val shareFile: File,
+        val fullFile: File,
+    ) : Stage
 
-    data class Failed(val heading: String, val message: String, val canRetry: Boolean) : Stage
+    data class Failed(val heading: String, val message: String, val retry: LoadedVideo? = null) : Stage
 }
 
 private enum class Saving { Idle, Busy, Done }
@@ -681,7 +715,7 @@ private fun heroView(stage: Stage): HeroView {
             colors.onPrimary,
         )
         is Stage.Optimizing -> HeroView(
-            if (stage.autoSend) "Preparing for Telegram" else "Optimizing…",
+            if (stage.video.autoSend) "Preparing for Telegram" else "Optimizing…",
             "",
             stage.tags,
             MaterialShapes.Clover4Leaf,

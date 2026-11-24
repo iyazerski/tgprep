@@ -51,10 +51,11 @@ object Updater {
                 main.post { onState("Downloading ${release.name}…") }
                 install(app, release)
                 done(onState) {}
-            } catch (e: IOException) {
-                done(onState) { toast(app, "Couldn't update: ${e.message}") }
-            } catch (e: JSONException) {
+            } catch (_: JSONException) {
                 done(onState) { toast(app, "Couldn't update: unexpected answer from GitHub") }
+            } catch (e: Exception) {
+                Log.w("update failed: $e")
+                done(onState) { toast(app, "Couldn't update: ${e.message ?: e.javaClass.simpleName}") }
             }
         }
     }
@@ -116,8 +117,8 @@ object Updater {
                 )
                 session.commit(result.intentSender)
             }
-        } catch (e: IOException) {
-            installer.abandonSession(id)
+        } catch (e: Throwable) {
+            runCatching { installer.abandonSession(id) }
             throw e
         }
     }
@@ -138,10 +139,15 @@ class InstallResult : BroadcastReceiver() {
         when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 val confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java) ?: return
-                context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                try {
+                    context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e: Exception) {
+                    Log.w("couldn't open update confirmation: $e")
+                    Updater.toast(context, "Couldn't open update confirmation — reopen TG Prep and try again")
+                }
             }
-            // Android closes the app and installs the new version.
-            PackageInstaller.STATUS_SUCCESS -> {}
+            // Android closes the app and installs the new version; user cancel needs no error toast.
+            PackageInstaller.STATUS_SUCCESS, PackageInstaller.STATUS_FAILURE_ABORTED -> {}
             else -> Updater.toast(
                 context,
                 "Update failed: ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "unknown error"}",

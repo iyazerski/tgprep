@@ -97,6 +97,7 @@ class YuvTextures {
     var crop = android.graphics.Rect(); private set
     private val allocated = Array(3) { IntArray(3) } // width, height, internal format
     private var staging: ByteBuffer = ByteBuffer.allocateDirect(0)
+    private var checkedUpload = false
 
     /** Copy [image]'s planes into the textures. The image can be closed afterwards. */
     fun upload(image: Image) {
@@ -112,8 +113,8 @@ class YuvTextures {
         crop = image.cropRect
         GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
         GLES30.glPixelStorei(GLES30.GL_UNPACK_ROW_LENGTH, 0)
+        var reallocated = false
         image.planes.forEachIndexed { i, plane ->
-            val w = if (i == 0) image.width else (image.width + 1) / 2
             val h = if (i == 0) image.height else (image.height + 1) / 2
             val ps = plane.pixelStride
             // Each plane goes up as raw bytes in an RGBA8 texture (4 bytes per texel) and the shader picks
@@ -136,6 +137,7 @@ class YuvTextures {
                 GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
                 GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
                 a[0] = texWidth; a[1] = h; a[2] = internal
+                reallocated = true
             }
             // Copy into our own buffer first: GL must not read the decoder's memory directly (on the
             // emulator that deadlocks), and the plane usually ends right after the last sample, so the
@@ -143,13 +145,20 @@ class YuvTextures {
             val bytes = plane.rowStride * h
             if (staging.capacity() < bytes) staging = ByteBuffer.allocateDirect(bytes)
             staging.clear()
-            staging.put(plane.buffer.duplicate().position(0) as ByteBuffer)
+            val src = plane.buffer.duplicate().apply {
+                position(0)
+                if (remaining() > bytes) limit(bytes)
+            }
+            staging.put(src)
             while (staging.position() < bytes) staging.put(0)
             staging.flip()
             GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0, texWidth, h, format, type, staging)
         }
-        val err = GLES30.glGetError()
-        check(err == GLES30.GL_NO_ERROR) { "Texture upload failed: GL error 0x${Integer.toHexString(err)}" }
+        if (reallocated || !checkedUpload) {
+            val err = GLES30.glGetError()
+            check(err == GLES30.GL_NO_ERROR) { "Texture upload failed: GL error 0x${Integer.toHexString(err)}" }
+            checkedUpload = true
+        }
     }
 
     fun release() = GLES30.glDeleteTextures(3, ids, 0)
@@ -166,8 +175,19 @@ class Renderer(
 ) {
     private val program: Int = buildProgram(VERTEX, FRAGMENT_HEADER + FRAGMENT_COMMON).also { check(it != 0) { "Shader build failed" } }
     private val vertices: FloatBuffer
-    private val tapX: Float
-    private val tapY: Float
+    private val aPos = GLES30.glGetAttribLocation(program, "aPos")
+    private val aTex = GLES30.glGetAttribLocation(program, "aTex")
+    private val uCrop = loc("uCrop")
+    private val uLumaSize = loc("uLumaSize")
+    private val uChromaSize = loc("uChromaSize")
+    private val uShiftDiv = loc("uShiftDiv")
+    private val uBytes = loc("uBytes")
+    private val uPixelStride = loc("uPixelStride")
+    private val uYuvToRgb = loc("uYuvToRgb")
+    private val uYuvOffset = loc("uYuvOffset")
+    private val uMaxCode = loc("uMaxCode")
+    private var cachedBitDepth = 0
+    private var checkedDraw = false
 
     init {
         // Quad corners (x, y) with the source texture coordinate that lands there after rotation.
@@ -194,8 +214,16 @@ class Renderer(
         val ratioX = srcWidth.toFloat() / outAlongSrcX
         val ratioY = srcHeight.toFloat() / outAlongSrcY
         val needTaps = ratioX >= 1.3f || ratioY >= 1.3f
-        tapX = if (needTaps) ratioX / 4f / srcWidth else 0f
-        tapY = if (needTaps) ratioY / 4f / srcHeight else 0f
+        val tapX = if (needTaps) ratioX / 4f / srcWidth else 0f
+        val tapY = if (needTaps) ratioY / 4f / srcHeight else 0f
+
+        GLES30.glUseProgram(program)
+        GLES30.glUniform1i(loc("sY"), 0)
+        GLES30.glUniform1i(loc("sU"), 1)
+        GLES30.glUniform1i(loc("sV"), 2)
+        GLES30.glUniform1i(loc("uTransfer"), color.transfer.ordinal)
+        GLES30.glUniform1f(loc("uSrcPeak"), color.peakNits)
+        GLES30.glUniform2f(loc("uTap"), tapX, tapY)
     }
 
     fun draw(frame: YuvTextures) {
@@ -205,25 +233,20 @@ class Renderer(
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0 + i)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, frame.ids[i])
         }
-        GLES30.glUniform1i(loc("sY"), 0)
-        GLES30.glUniform1i(loc("sU"), 1)
-        GLES30.glUniform1i(loc("sV"), 2)
         val c = frame.crop
-        GLES30.glUniform4f(loc("uCrop"), c.left.toFloat(), c.top.toFloat(), c.width().toFloat(), c.height().toFloat())
-        GLES30.glUniform2i(loc("uLumaSize"), frame.width, frame.height)
-        GLES30.glUniform2i(loc("uChromaSize"), (frame.width + 1) / 2, (frame.height + 1) / 2)
-        GLES30.glUniform1f(loc("uShiftDiv"), (1 shl frame.shift).toFloat())
-        GLES30.glUniform1i(loc("uBytes"), frame.bytesPerSample)
-        GLES30.glUniform3i(loc("uPixelStride"), frame.pixelStrides[0], frame.pixelStrides[1], frame.pixelStrides[2])
-        val (matrix, offset) = yuvToRgb(color.standard, color.fullRange, frame.bitDepth)
-        GLES30.glUniformMatrix3fv(loc("uYuvToRgb"), 1, false, matrix, 0)
-        GLES30.glUniform3f(loc("uYuvOffset"), offset[0], offset[1], offset[2])
-        GLES30.glUniform1f(loc("uMaxCode"), ((1 shl frame.bitDepth) - 1).toFloat())
-        GLES30.glUniform1i(loc("uTransfer"), color.transfer.ordinal)
-        GLES30.glUniform1f(loc("uSrcPeak"), color.peakNits)
-        GLES30.glUniform2f(loc("uTap"), tapX, tapY)
-        val aPos = GLES30.glGetAttribLocation(program, "aPos")
-        val aTex = GLES30.glGetAttribLocation(program, "aTex")
+        GLES30.glUniform4f(uCrop, c.left.toFloat(), c.top.toFloat(), c.width().toFloat(), c.height().toFloat())
+        GLES30.glUniform2i(uLumaSize, frame.width, frame.height)
+        GLES30.glUniform2i(uChromaSize, (frame.width + 1) / 2, (frame.height + 1) / 2)
+        GLES30.glUniform1f(uShiftDiv, (1 shl frame.shift).toFloat())
+        GLES30.glUniform1i(uBytes, frame.bytesPerSample)
+        GLES30.glUniform3i(uPixelStride, frame.pixelStrides[0], frame.pixelStrides[1], frame.pixelStrides[2])
+        if (frame.bitDepth != cachedBitDepth) {
+            val (matrix, offset) = yuvToRgb(color.standard, color.fullRange, frame.bitDepth)
+            GLES30.glUniformMatrix3fv(uYuvToRgb, 1, false, matrix, 0)
+            GLES30.glUniform3f(uYuvOffset, offset[0], offset[1], offset[2])
+            GLES30.glUniform1f(uMaxCode, ((1 shl frame.bitDepth) - 1).toFloat())
+            cachedBitDepth = frame.bitDepth
+        }
         vertices.position(0)
         GLES30.glVertexAttribPointer(aPos, 2, GLES30.GL_FLOAT, false, 16, vertices)
         GLES30.glEnableVertexAttribArray(aPos)
@@ -231,6 +254,13 @@ class Renderer(
         GLES30.glVertexAttribPointer(aTex, 2, GLES30.GL_FLOAT, false, 16, vertices)
         GLES30.glEnableVertexAttribArray(aTex)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+        if (!checkedDraw) {
+            checkError()
+            checkedDraw = true
+        }
+    }
+
+    fun checkError() {
         val err = GLES30.glGetError()
         check(err == GLES30.GL_NO_ERROR) { "GL error 0x${Integer.toHexString(err)}" }
     }
@@ -336,17 +366,20 @@ in vec2 vTex;
 out vec4 fragColor;
 #define FRAG_COLOR fragColor
 
-float byteAt(sampler2D s, int x, int y) {
-    vec4 t = texelFetch(s, ivec2(x >> 2, y), 0);
-    return floor(t[x & 3] * 255.0 + 0.5);
-}
-
 // Code value of the sample at p (in samples, clamped to the visible plane), normalized to 0..1.
 float fetch(sampler2D s, int stride, ivec2 p, ivec2 size) {
     p = clamp(p, ivec2(0), size - 1);
     int x = p.x * stride;
-    float v = byteAt(s, x, p.y);
-    if (uBytes == 2) v += 256.0 * byteAt(s, x + 1, p.y);
+    vec4 t = texelFetch(s, ivec2(x >> 2, p.y), 0);
+    int lane = x & 3;
+    float v = floor(t[lane] * 255.0 + 0.5);
+    if (uBytes == 2) {
+        // P010 pixelStride is 2 or 4, so both bytes of a sample almost always sit in the same RGBA8 texel.
+        float hi = lane < 3
+            ? floor(t[lane + 1] * 255.0 + 0.5)
+            : floor(texelFetch(s, ivec2((x >> 2) + 1, p.y), 0).x * 255.0 + 0.5);
+        v += 256.0 * hi;
+    }
     return floor(v / uShiftDiv) / uMaxCode;
 }
 
