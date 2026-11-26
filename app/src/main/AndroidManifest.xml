@@ -9,12 +9,14 @@
 
     <application
         android:icon="@drawable/ic_launcher"
-        android:label="TG Prep"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
         android:theme="@style/Theme.TgPrep">
 
+        <!-- Handles a new system language itself: a restart would stop the running optimization and replay a Share. -->
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|locale|layoutDirection"
             android:exported="true"
             android:launchMode="singleTask">
             <intent-filter>

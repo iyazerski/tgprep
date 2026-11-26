@@ -15,7 +15,9 @@ The screen is Material 3 Expressive (Jetpack Compose) in the wallpaper's colors,
 system is: a card with the preview and a badge that morphs with each step, a wavy progress bar,
 buttons that change shape when pressed, and spring motion. It only shows what matters to the user
 (preview, HDR type, resolution, size saved). File and codec details are in a sheet behind the **i**
-button. The arrow next to **Send to Telegram** sends with another app.
+button. The arrow next to **Send to Telegram** sends with another app. The app is in the system
+language when it's one of English, Spanish, Chinese, Hindi, French, Russian, Arabic, Portuguese,
+German, Japanese, Polish, or Korean, and in English otherwise.
 
 Opening TG Prep from the launcher shows the full screen instead: pick a video, optimize, send, save a
 copy to the gallery, and see the details. If optimizing fails, the app stays open with the error
