@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">TG Prep</string>
+    <string name="tagline">HDR video that Telegram sends as is</string>
+    <string name="technical_details">Technical details</string>
+    <string name="more">More</string>
+    <string name="check_for_updates">Check for updates</string>
+    <string name="version">Version %1$s</string>
+    <string name="allow_installs">Allow TG Prep to install updates, then tap again</string>
+
+    <string name="idle_title">Share a video to TG Prep</string>
+    <string name="idle_detail">Or pick one here. It\'s converted for Telegram with true-to-life colors and smooth motion.</string>
+    <string name="opening">Opening video…</string>
+    <string name="preparing">Preparing for Telegram</string>
+    <string name="optimizing">Optimizing…</string>
+    <string name="ready_to_optimize">Ready to optimize for Telegram.</string>
+    <string name="cancelled">Cancelled.</string>
+    <string name="ready_to_send">Ready to send</string>
+    <!-- %1$d is the short side of the video, like 1080. -->
+    <string name="pick_top_quality">In Telegram, pick %1$dp (top quality) so it\'s sent as is.</string>
+    <string name="cant_read">Can\'t read this video</string>
+    <string name="couldnt_optimize">Couldn\'t optimize this video</string>
+    <string name="video">Video</string>
+    <!-- %1$s is when the video was taken. -->
+    <string name="video_taken">Video · %1$s</string>
+    <!-- Resolution and frame rate, like 1080p · 30 fps. -->
+    <string name="video_format">%1$dp · %2$d fps</string>
+    <string name="video_preview">Video preview</string>
+
+    <string name="pick_video">Pick video</string>
+    <string name="optimize">Optimize for Telegram</string>
+    <string name="cancel">Cancel</string>
+    <string name="try_again">Try again</string>
+    <string name="send_to_telegram">Send to Telegram</string>
+    <string name="more_ways_to_send">More ways to send</string>
+    <string name="send_with_another_app">Send with another app</string>
+    <string name="send_video">Send video</string>
+    <string name="save_to_gallery">Save to gallery</string>
+    <string name="saving">Saving…</string>
+    <string name="saved_to_gallery">Saved to gallery</string>
+    <string name="save_failed">Save failed</string>
+    <string name="another_video">Another video</string>
+    <string name="wait_for_current">Wait for the current video to finish</string>
+
+    <string name="update_checking">Checking…</string>
+    <string name="update_downloading">Downloading %1$s…</string>
+    <!-- %1$s is the version. -->
+    <string name="update_current">TG Prep %1$s is up to date</string>
+    <string name="couldnt_update">Couldn\'t update: %1$s</string>
+    <string name="update_bad_answer">Couldn\'t update: unexpected answer from GitHub</string>
+    <string name="github_answered">GitHub answered %1$d</string>
+    <string name="release_unexpected">Unexpected release %1$s</string>
+    <!-- %1$s is the release, %2$s the file name. -->
+    <string name="release_no_apk">Release %1$s has no %2$s</string>
+    <string name="download_answered">The download answered %1$d</string>
+    <string name="update_confirm_failed">Couldn\'t open the update confirmation. Reopen TG Prep and try again.</string>
+    <string name="install_failed">Update failed: %1$s</string>
+    <string name="install_unknown_error">unknown error</string>
+</resources>

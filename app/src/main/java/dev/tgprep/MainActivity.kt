@@ -14,6 +14,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.text.format.DateFormat
+import android.text.format.Formatter
 import android.util.Size
 import android.view.HapticFeedbackConstants
 import android.view.WindowManager
@@ -23,6 +25,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -107,6 +110,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -118,6 +124,7 @@ import androidx.core.net.toUri
 import androidx.graphics.shapes.RoundedPolygon
 import androidx.lifecycle.lifecycleScope
 import java.io.File
+import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -166,7 +173,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         if (stage is Stage.Optimizing) {
             if (intent.sharedUri() != null) {
-                Toast.makeText(this, "Wait for the current video to finish", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, R.string.wait_for_current, Toast.LENGTH_SHORT).show()
             }
             return
         }
@@ -228,11 +235,11 @@ class MainActivity : ComponentActivity() {
                 if (autoSend) {
                     optimize(video)
                 } else {
-                    stage = Stage.Ready(video, videoTitle(info), "Ready to optimize for Telegram.", sourceTags(info))
+                    stage = Stage.Ready(video, R.string.ready_to_optimize)
                 }
             }.onFailure {
                 technical = it.toString()
-                fail("Can't read this video", it, retry = null)
+                fail(R.string.cant_read, it, retry = null)
             }
         }
     }
@@ -249,7 +256,7 @@ class MainActivity : ComponentActivity() {
         OutputProvider.prune(this, keep = setOf(shareFile, out))
         val optimizer = Optimizer(this, uri)
         progress = 0f
-        stage = Stage.Optimizing(video, optimizer, sourceTags(info))
+        stage = Stage.Optimizing(video, optimizer)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val plan = optimizer.plan(info)
         lifecycleScope.launch {
@@ -266,16 +273,14 @@ class MainActivity : ComponentActivity() {
                 if (autoSend) {
                     finishAndRemoveTask()
                 } else {
-                    stage = Stage.Ready(video, videoTitle(info), "Cancelled.", sourceTags(info))
+                    stage = Stage.Ready(video, R.string.cancelled)
                 }
                 return@launch
             }
             result.onSuccess { report ->
                 technical = "Source\n${info.describe()}\n\nResult\n$report"
-                // Telegram never preselects its top quality step, and only that step sends the file untouched.
-                val hint = "In Telegram, pick ${min(plan.width, plan.height)}p (top quality) so it's sent as is."
                 if (autoSend) {
-                    Toast.makeText(this@MainActivity, hint, Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, getString(R.string.pick_top_quality, min(plan.width, plan.height)), Toast.LENGTH_LONG).show()
                     share(shareFile, direct = true)
                     // Use finish(), not finishAndRemoveTask(): a share chooser opens in our task and
                     // removing the task would close it. Recents replay is blocked by LAUNCHED_FROM_HISTORY.
@@ -284,13 +289,13 @@ class MainActivity : ComponentActivity() {
                 }
                 window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 saving = Saving.Idle
-                stage = Stage.Done(video, hint, resultTags(plan, shareFile.length(), video.size), shareFile, out)
+                stage = Stage.Done(video, plan, shareFile.length(), shareFile, out)
             }.onFailure {
                 Log.w("optimize failed: ${it.stackTraceToString()}")
                 // Full trace goes to logcat; the details sheet shows the readable chain of causes.
                 technical = "Source\n${info.describe()}\n\nError\n" +
                     generateSequence(it) { e -> e.cause }.take(3).joinToString("\n\ncaused by: ") { e -> e.toString() }
-                fail("Couldn't optimize this video", it, retry = video)
+                fail(R.string.couldnt_optimize, it, retry = video)
             }
         }
     }
@@ -313,7 +318,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        startActivity(Intent.createChooser(send, "Send video"))
+        startActivity(Intent.createChooser(send, getString(R.string.send_video)))
     }
 
     private fun saveToGallery(done: Stage.Done) {
@@ -353,7 +358,7 @@ class MainActivity : ComponentActivity() {
                 window.decorView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
             } else {
                 saving = Saving.Idle
-                snackbar.showSnackbar("Save failed")
+                snackbar.showSnackbar(getString(R.string.save_failed))
             }
         }
     }
@@ -382,7 +387,7 @@ class MainActivity : ComponentActivity() {
     private fun checkForUpdates() {
         if (!packageManager.canRequestPackageInstalls()) {
             // Android asks once per app before it may install anything, updates included.
-            Toast.makeText(this, "Allow TG Prep to install updates, then tap again", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, R.string.allow_installs, Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:$packageName".toUri()))
             return
         }
@@ -396,29 +401,9 @@ class MainActivity : ComponentActivity() {
         stage = Stage.Idle
     }
 
-    private fun fail(heading: String, error: Throwable, retry: LoadedVideo?) {
+    private fun fail(@StringRes heading: Int, error: Throwable, retry: LoadedVideo?) {
         val cause = generateSequence(error) { it.cause }.last()
         stage = Stage.Failed(heading, cause.message?.takeIf { it.isNotBlank() } ?: cause.javaClass.simpleName, retry)
-    }
-
-    private fun videoTitle(info: SourceInfo): String =
-        info.createdMs?.let { "Video · ${SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()).format(Date(it))}" } ?: "Video"
-
-    private fun sourceTags(info: SourceInfo): List<String> {
-        val kind = when {
-            info.dvProfile != null -> "Dolby Vision"
-            info.isHdr -> "HDR"
-            else -> "SDR"
-        }
-        val short = min(info.width, info.height)
-        val seconds = (info.durationUs / 1_000_000.0).roundToInt()
-        return listOf(kind, "${short}p · ${info.fps.roundToInt()} fps", "%d:%02d".format(seconds / 60, seconds % 60))
-    }
-
-    private fun resultTags(plan: Plan, bytes: Long, sourceSize: Long?): List<String> {
-        val tags = mutableListOf("${min(plan.width, plan.height)}p · ${plan.fps} fps", "%.1f MB".format(bytes / 1e6))
-        sourceSize?.takeIf { it > bytes }?.let { tags += "−${((1 - bytes.toDouble() / it) * 100).roundToInt()}%" }
-        return tags
     }
 
     // ---- Screen ----
@@ -435,15 +420,15 @@ class MainActivity : ComponentActivity() {
             containerColor = background,
             topBar = {
                 LargeFlexibleTopAppBar(
-                    title = { Text("TG Prep") },
-                    subtitle = { Text("HDR video that Telegram sends as is") },
+                    title = { Text(stringResource(R.string.app_name)) },
+                    subtitle = { Text(stringResource(R.string.tagline)) },
                     actions = {
                         AnimatedVisibility(
                             technical.isNotEmpty(),
                             enter = scaleIn(motion.defaultSpatialSpec()) + fadeIn(motion.defaultEffectsSpec()),
                             exit = scaleOut(motion.fastSpatialSpec()) + fadeOut(motion.fastEffectsSpec()),
                         ) {
-                            IconButton(onClick = { details = true }) { Symbol(R.drawable.sym_info, description = "Technical details") }
+                            IconButton(onClick = { details = true }) { Symbol(R.drawable.sym_info, description = stringResource(R.string.technical_details)) }
                         }
                         Menu()
                     },
@@ -479,7 +464,7 @@ class MainActivity : ComponentActivity() {
         var open by remember { mutableStateOf(false) }
         val versionName = remember { packageManager.getPackageInfo(packageName, 0).versionName }
         Box {
-            IconButton(onClick = { open = true }) { Symbol(R.drawable.sym_more_vert, description = "More") }
+            IconButton(onClick = { open = true }) { Symbol(R.drawable.sym_more_vert, description = stringResource(R.string.more)) }
             DropdownMenuPopup(expanded = open, onDismissRequest = { open = false }) {
                 DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
                     DropdownMenuItem(
@@ -487,8 +472,8 @@ class MainActivity : ComponentActivity() {
                             open = false
                             checkForUpdates()
                         },
-                        text = { Text("Check for updates") },
-                        supportingText = { Text("Version $versionName") },
+                        text = { Text(stringResource(R.string.check_for_updates)) },
+                        supportingText = { Text(stringResource(R.string.version, versionName.orEmpty())) },
                         shape = MenuDefaults.itemShape(0, 1).shape,
                         leadingIcon = { Symbol(R.drawable.sym_system_update) },
                         enabled = updating == null,
@@ -518,23 +503,24 @@ class MainActivity : ComponentActivity() {
         ) { shown ->
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 when (shown) {
-                    Stage.Idle -> MainButton("Pick video", R.drawable.sym_video_library, onClick = ::pickVideo)
+                    Stage.Idle -> MainButton(stringResource(R.string.pick_video), R.drawable.sym_video_library, onClick = ::pickVideo)
                     is Stage.Opening -> Unit
                     is Stage.Ready -> {
-                        MainButton("Optimize for Telegram", R.drawable.sym_auto_awesome) { optimize(shown.video) }
+                        MainButton(stringResource(R.string.optimize), R.drawable.sym_auto_awesome) { optimize(shown.video) }
                         SecondaryButtons(null)
                     }
-                    is Stage.Optimizing -> MainButton("Cancel", R.drawable.sym_close, tonal = true) { shown.optimizer.cancelled = true }
+                    is Stage.Optimizing ->
+                        MainButton(stringResource(R.string.cancel), R.drawable.sym_close, tonal = true) { shown.optimizer.cancelled = true }
                     is Stage.Done -> {
                         SendButton(shown.shareFile)
                         SecondaryButtons(shown)
                     }
                     is Stage.Failed ->
                         if (shown.retry != null) {
-                            MainButton("Try again", R.drawable.sym_refresh) { optimize(shown.retry) }
+                            MainButton(stringResource(R.string.try_again), R.drawable.sym_refresh) { optimize(shown.retry) }
                             SecondaryButtons(null)
                         } else {
-                            MainButton("Pick video", R.drawable.sym_video_library, onClick = ::pickVideo)
+                            MainButton(stringResource(R.string.pick_video), R.drawable.sym_video_library, onClick = ::pickVideo)
                         }
                 }
             }
@@ -556,7 +542,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Symbol(R.drawable.sym_send, Modifier.size(SplitButtonDefaults.leadingButtonIconSizeFor(height)))
                     Spacer(Modifier.width(ButtonDefaults.iconSpacingFor(height)))
-                    Text("Send to Telegram", style = ButtonDefaults.textStyleFor(height))
+                    Text(stringResource(R.string.send_to_telegram), style = ButtonDefaults.textStyleFor(height))
                 }
             },
             trailingButton = {
@@ -572,7 +558,7 @@ class MainActivity : ComponentActivity() {
                         Symbol(
                             R.drawable.sym_keyboard_arrow_down,
                             Modifier.size(SplitButtonDefaults.trailingButtonIconSizeFor(height)).rotate(turn),
-                            description = "More ways to send",
+                            description = stringResource(R.string.more_ways_to_send),
                         )
                     }
                     DropdownMenuPopup(expanded = menu, onDismissRequest = { menu = false }) {
@@ -582,7 +568,7 @@ class MainActivity : ComponentActivity() {
                                     menu = false
                                     share(file, direct = false)
                                 },
-                                text = { Text("Send with another app") },
+                                text = { Text(stringResource(R.string.send_with_another_app)) },
                                 shape = MenuDefaults.itemShape(0, 1).shape,
                                 leadingIcon = { Symbol(R.drawable.sym_share) },
                             )
@@ -604,9 +590,9 @@ class MainActivity : ComponentActivity() {
                     buttonGroupContent = {
                         val interaction = remember { MutableInteractionSource() }
                         val (label, icon) = when (saving) {
-                            Saving.Idle -> "Save to gallery" to R.drawable.sym_download
-                            Saving.Busy -> "Saving…" to R.drawable.sym_download
-                            Saving.Done -> "Saved to gallery" to R.drawable.sym_check
+                            Saving.Idle -> stringResource(R.string.save_to_gallery) to R.drawable.sym_download
+                            Saving.Busy -> stringResource(R.string.saving) to R.drawable.sym_download
+                            Saving.Done -> stringResource(R.string.saved_to_gallery) to R.drawable.sym_check
                         }
                         FilledTonalButton(
                             onClick = { saveToGallery(result) },
@@ -629,7 +615,7 @@ class MainActivity : ComponentActivity() {
                         shapes = ButtonDefaults.shapesFor(height),
                         contentPadding = ButtonDefaults.contentPaddingFor(height),
                         interactionSource = interaction,
-                    ) { ButtonLabel("Another video", R.drawable.sym_video_library) }
+                    ) { ButtonLabel(stringResource(R.string.another_video), R.drawable.sym_video_library) }
                 },
                 menuContent = {},
             )
@@ -647,20 +633,15 @@ private sealed interface Stage {
     /** Reading the video; from Share, optimizing and sending follow without a tap. */
     data class Opening(val uri: Uri, val autoSend: Boolean) : Stage
 
-    data class Ready(val video: LoadedVideo, val title: String, val note: String, val tags: List<String>) : Stage
+    data class Ready(val video: LoadedVideo, @StringRes val note: Int) : Stage
 
-    data class Optimizing(val video: LoadedVideo, val optimizer: Optimizer, val tags: List<String>) : Stage
+    data class Optimizing(val video: LoadedVideo, val optimizer: Optimizer) : Stage
 
-    /** [shareFile] has the location removed for chats; [fullFile] keeps it for the gallery copy. */
-    data class Done(
-        val video: LoadedVideo,
-        val hint: String,
-        val tags: List<String>,
-        val shareFile: File,
-        val fullFile: File,
-    ) : Stage
+    /** [shareFile] ([bytes] long) has the location removed for chats; [fullFile] keeps it for the gallery copy. */
+    data class Done(val video: LoadedVideo, val plan: Plan, val bytes: Long, val shareFile: File, val fullFile: File) : Stage
 
-    data class Failed(val heading: String, val message: String, val retry: LoadedVideo? = null) : Stage
+    /** [message] is the system's own words for the error, so it stays as the system put it. */
+    data class Failed(@StringRes val heading: Int, val message: String, val retry: LoadedVideo? = null) : Stage
 }
 
 private enum class Saving { Idle, Busy, Done }
@@ -684,8 +665,8 @@ private fun heroView(stage: Stage): HeroView {
     val colors = MaterialTheme.colorScheme
     return when (stage) {
         Stage.Idle -> HeroView(
-            "Share a video to TG Prep",
-            "Or pick one here. It's converted for Telegram with true-to-life colors and smooth motion.",
+            stringResource(R.string.idle_title),
+            stringResource(R.string.idle_detail),
             emptyList(),
             MaterialShapes.Cookie12Sided,
             R.drawable.sym_movie,
@@ -694,7 +675,7 @@ private fun heroView(stage: Stage): HeroView {
             colors.onPrimaryContainer,
         )
         is Stage.Opening -> HeroView(
-            if (stage.autoSend) "Preparing for Telegram" else "Opening video…",
+            stringResource(if (stage.autoSend) R.string.preparing else R.string.opening),
             "",
             emptyList(),
             MaterialShapes.Cookie12Sided,
@@ -705,9 +686,9 @@ private fun heroView(stage: Stage): HeroView {
             busy = true,
         )
         is Stage.Ready -> HeroView(
-            stage.title,
-            stage.note,
-            stage.tags,
+            videoTitle(stage.video.info),
+            stringResource(stage.note),
+            sourceTags(stage.video.info),
             MaterialShapes.Clover4Leaf,
             R.drawable.sym_movie,
             colors.surfaceBright,
@@ -715,9 +696,9 @@ private fun heroView(stage: Stage): HeroView {
             colors.onPrimary,
         )
         is Stage.Optimizing -> HeroView(
-            if (stage.video.autoSend) "Preparing for Telegram" else "Optimizing…",
+            stringResource(if (stage.video.autoSend) R.string.preparing else R.string.optimizing),
             "",
-            stage.tags,
+            sourceTags(stage.video.info),
             MaterialShapes.Clover4Leaf,
             R.drawable.sym_movie,
             colors.surfaceBright,
@@ -726,9 +707,10 @@ private fun heroView(stage: Stage): HeroView {
             busy = true,
         )
         is Stage.Done -> HeroView(
-            "Ready to send",
-            stage.hint,
-            stage.tags,
+            stringResource(R.string.ready_to_send),
+            // Telegram never preselects its top quality step, and only that step sends the file untouched.
+            stringResource(R.string.pick_top_quality, min(stage.plan.width, stage.plan.height)),
+            resultTags(stage.plan, stage.bytes, stage.video.size),
             MaterialShapes.Cookie9Sided,
             R.drawable.sym_check,
             colors.primaryContainer,
@@ -736,7 +718,7 @@ private fun heroView(stage: Stage): HeroView {
             colors.onPrimary,
         )
         is Stage.Failed -> HeroView(
-            stage.heading,
+            stringResource(stage.heading),
             stage.message,
             emptyList(),
             MaterialShapes.SoftBurst,
@@ -746,6 +728,42 @@ private fun heroView(stage: Stage): HeroView {
             colors.onError,
         )
     }
+}
+
+@Composable
+private fun videoTitle(info: SourceInfo): String {
+    val created = info.createdMs ?: return stringResource(R.string.video)
+    val locale = LocalConfiguration.current.locales[0]
+    val date = SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, "dMMMHHmm"), locale).format(Date(created))
+    return stringResource(R.string.video_taken, date)
+}
+
+@Composable
+private fun sourceTags(info: SourceInfo): List<String> {
+    val kind = when {
+        info.dvProfile != null -> "Dolby Vision"
+        info.isHdr -> "HDR"
+        else -> "SDR"
+    }
+    val seconds = (info.durationUs / 1_000_000.0).roundToInt()
+    return listOf(
+        kind,
+        stringResource(R.string.video_format, min(info.width, info.height), info.fps.roundToInt()),
+        "%d:%02d".format(seconds / 60, seconds % 60),
+    )
+}
+
+@Composable
+private fun resultTags(plan: Plan, bytes: Long, sourceSize: Long?): List<String> {
+    val tags = mutableListOf(
+        stringResource(R.string.video_format, min(plan.width, plan.height), plan.fps),
+        Formatter.formatShortFileSize(LocalContext.current, bytes),
+    )
+    sourceSize?.takeIf { it > bytes }?.let {
+        val saved = ((1 - bytes.toDouble() / it) * 100).roundToInt()
+        tags += "−" + NumberFormat.getPercentInstance(LocalConfiguration.current.locales[0]).format(saved / 100.0)
+    }
+    return tags
 }
 
 /** The video and where it stands: preview, a badge that morphs with the stage, title, and short facts. */
@@ -766,7 +784,7 @@ private fun Hero(view: HeroView, thumbnail: ImageBitmap?, progress: Float?) {
                 Box {
                     Image(
                         thumbnail,
-                        contentDescription = "Video preview",
+                        contentDescription = stringResource(R.string.video_preview),
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxWidth().height(240.dp).clip(MaterialTheme.shapes.extraLarge),
                     )
@@ -784,8 +802,10 @@ private fun Hero(view: HeroView, thumbnail: ImageBitmap?, progress: Float?) {
             if (progress != null) {
                 val shown by animateFloatAsState(progress, ProgressIndicatorDefaults.ProgressAnimationSpec, label = "progress")
                 Spacer(Modifier.height(4.dp))
+                val locale = LocalConfiguration.current.locales[0]
+                val percent = remember(locale) { NumberFormat.getPercentInstance(locale) }
                 Text(
-                    "${(progress * 100).toInt()}%",
+                    percent.format((progress * 100).toInt() / 100.0),
                     style = MaterialTheme.typography.displaySmallEmphasized,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -887,7 +907,7 @@ private fun UpdateProgress(progress: String?) {
 private fun DetailsSheet(text: String, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, bottom = 24.dp)) {
-            Text("Technical details", style = MaterialTheme.typography.titleLargeEmphasized)
+            Text(stringResource(R.string.technical_details), style = MaterialTheme.typography.titleLargeEmphasized)
             Spacer(Modifier.height(12.dp))
             SelectionContainer {
                 Text(

@@ -8,6 +8,7 @@ import android.content.pm.PackageInstaller
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.annotation.StringRes
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -40,22 +41,25 @@ object Updater {
         val app = context.applicationContext
         val info = app.packageManager.getPackageInfo(app.packageName, 0)
         val installed = info.longVersionCode
-        onState("Checking…")
+        onState(app.getString(R.string.update_checking))
         executor.execute {
             try {
                 val release = latest()
                 if (release.build <= installed) {
-                    done(onState) { toast(app, "TG Prep ${info.versionName} is up to date") }
+                    done(onState) { toast(app, app.getString(R.string.update_current, info.versionName)) }
                     return@execute
                 }
-                main.post { onState("Downloading ${release.name}…") }
+                main.post { onState(app.getString(R.string.update_downloading, release.name)) }
                 install(app, release)
                 done(onState) {}
             } catch (_: JSONException) {
-                done(onState) { toast(app, "Couldn't update: unexpected answer from GitHub") }
+                done(onState) { toast(app, app.getString(R.string.update_bad_answer)) }
             } catch (e: Exception) {
                 Log.w("update failed: $e")
-                done(onState) { toast(app, "Couldn't update: ${e.message ?: e.javaClass.simpleName}") }
+                done(onState) {
+                    val reason = if (e is Failed) app.getString(e.reason, *e.args) else e.message ?: e.javaClass.simpleName
+                    toast(app, app.getString(R.string.couldnt_update, reason))
+                }
             }
         }
     }
@@ -71,14 +75,14 @@ object Updater {
         val connection = open(LATEST).apply { setRequestProperty("Accept", "application/vnd.github+json") }
         val json = try {
             if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                throw IOException("GitHub answered ${connection.responseCode}")
+                throw Failed(R.string.github_answered, connection.responseCode)
             }
             JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
         } finally {
             connection.disconnect()
         }
         val tag = json.getString("tag_name")
-        val build = tag.substringAfterLast('.').toLongOrNull() ?: throw IOException("Unexpected release $tag")
+        val build = tag.substringAfterLast('.').toLongOrNull() ?: throw Failed(R.string.release_unexpected, tag)
         val assets = json.getJSONArray("assets")
         for (i in 0 until assets.length()) {
             val asset = assets.getJSONObject(i)
@@ -86,7 +90,7 @@ object Updater {
                 return Release(build, tag.removePrefix("v"), asset.getString("browser_download_url"))
             }
         }
-        throw IOException("Release $tag has no $APK")
+        throw Failed(R.string.release_no_apk, tag, APK)
     }
 
     /** Stream the APK into an install session and commit it; [InstallResult] takes it from there. */
@@ -102,7 +106,7 @@ object Updater {
                 val connection = open(release.apk)
                 try {
                     if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                        throw IOException("The download answered ${connection.responseCode}")
+                        throw Failed(R.string.download_answered, connection.responseCode)
                     }
                     session.openWrite(APK, 0, connection.contentLengthLong).use { out ->
                         connection.inputStream.use { it.copyTo(out) }
@@ -131,6 +135,9 @@ object Updater {
     fun toast(context: Context, text: String) {
         Toast.makeText(context, text, Toast.LENGTH_LONG).show()
     }
+
+    /** A failure the app can explain, as a string resource read in the system language when shown. */
+    private class Failed(@StringRes val reason: Int, vararg val args: Any) : IOException(args.joinToString())
 }
 
 /** Gets the install session's result: shows Android's confirmation, or says why it failed. */
@@ -143,14 +150,17 @@ class InstallResult : BroadcastReceiver() {
                     context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 } catch (e: Exception) {
                     Log.w("couldn't open update confirmation: $e")
-                    Updater.toast(context, "Couldn't open update confirmation — reopen TG Prep and try again")
+                    Updater.toast(context, context.getString(R.string.update_confirm_failed))
                 }
             }
             // Android closes the app and installs the new version; user cancel needs no error toast.
             PackageInstaller.STATUS_SUCCESS, PackageInstaller.STATUS_FAILURE_ABORTED -> {}
             else -> Updater.toast(
                 context,
-                "Update failed: ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "unknown error"}",
+                context.getString(
+                    R.string.install_failed,
+                    intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: context.getString(R.string.install_unknown_error),
+                ),
             )
         }
     }
